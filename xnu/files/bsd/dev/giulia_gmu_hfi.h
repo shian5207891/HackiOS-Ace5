@@ -262,6 +262,14 @@ static bool a750_hfi_query(struct a750_hfi *s, struct a750_memory *m, vm_offset_
         PE_parse_boot_argn("gpu_opp",&opp,sizeof(opp));
         if (opp<1||opp>12) opp=1;
         a750_log("ace5-gpu: GX operating point %u requested (1 = 231 MHz, 12 = 903 MHz)\n",opp);
+        /* what the GX clock domain looks like before the vote */
+        vm_offset_t cc=ml_io_map(0x3d90000,0xa000);
+        if (cc) {
+            a750_read(cc,0x905c,"GPU_CC_GX_GDSCR_BEFORE_VOTE");
+            a750_read(cc,0x9058,"GPU_CC_GX_GDSCR2_BEFORE_VOTE");
+            a750_read(cc,0x9300,"GPU_CC_GX_CMD_RCGR_BEFORE_VOTE");
+            a750_read(cc,0x9304,"GPU_CC_GX_CFG_RCGR_BEFORE_VOTE");
+        }
         uint32_t vote[]={0,opp,opp,opp};
         good=a750_hfi_send(s,30,vote,4,false,NULL);
         bool requested=false;
@@ -272,6 +280,11 @@ static bool a750_hfi_query(struct a750_hfi *s, struct a750_memory *m, vm_offset_
             good=a750_poll(gmu,0x16648,1u<<31,1u<<31);
             a750_wr(gmu,0x16644,1u<<31);
             uint32_t status=a750_read(gmu,0x16340,"GFX_PWR_CLK_OOB");
+            if (cc) {
+                a750_read(cc,0x905c,"GPU_CC_GX_GDSCR_AFTER_VOTE");
+                a750_read(cc,0x9300,"GPU_CC_GX_CMD_RCGR_AFTER_VOTE");
+                a750_read(cc,0x9304,"GPU_CC_GX_CFG_RCGR_AFTER_VOTE");
+            }
             good=good && !(status&3);
             if (good) {
                 vm_offset_t gx=ml_io_map(0x3d00000,0x10000);
