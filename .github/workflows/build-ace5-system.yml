@@ -1,0 +1,141 @@
+name: Build Ace5 system image
+
+# 阶段 3+4：iOS 16.5 组件 + Mesa + userland + APFS 系统镜像
+# 只编译，不碰设备。产物约 2.5 GB。
+# 注意：不包含 macOS 的 sips 壁纸转换（无 Mac 就跳过默认壁纸）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  system:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+
+    env:
+      THEOS: ${{ github.workspace }}/local/theos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 腾空间（这一步很关键）
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
+                      /usr/share/swift /usr/local/share/chromium \
+                      /opt/hostedtoolcache /usr/local/.ghcup 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl xz-utils ca-certificates \
+            clang-18 lld-18 llvm-18 \
+            7zip \
+            flex bison m4 perl unzip zip \
+            python3 python3-venv python3-pip python3-mako python3-yaml \
+            autoconf automake libtool pkg-config libncurses-dev \
+            meson ninja-build nasm
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+          echo "== 7z 版本（必须 >= 23，才能读 APFS）=="
+          7z | head -3
+
+      - name: Theos 工具链
+        run: |
+          mkdir -p "$THEOS/toolchain" local
+          curl -fL --retry 3 -o local/ios-toolchain-arm64.tar.xz \
+            https://github.com/L1ghtmann/llvm-project/releases/download/test-210562a/iOSToolchain-aarch64.tar.xz
+          tar -xJf local/ios-toolchain-arm64.tar.xz -C "$THEOS/toolchain"
+          test -x "$THEOS/toolchain/linux/iphone/bin/ld"
+
+      - name: Theos SDK（iPhoneOS16.5）
+        run: |
+          git clone --no-checkout --filter=blob:none https://github.com/theos/sdks.git "$THEOS/sdks"
+          git -C "$THEOS/sdks" checkout --detach 0222fd5413cf4b9af096f37b4621afa2688572f7
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include"
+
+      - name: 内核侧交叉编译器（xnu-deps stage1）
+        run: xnu-deps/setup.sh --stage1
+
+      - name: 图片工具依赖
+        run: |
+          python3 -m venv local/image-venv
+          . local/image-venv/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install fonttools Pillow lzfse
+          echo "$PWD/local/image-venv/bin" >> "$GITHUB_PATH"
+
+      - name: 从 Apple CDN 取 iOS 16.5 组件
+        run: |
+          df -h /
+          bash ios165/fetch.sh
+          df -h /
+          du -sh ios165/* 2>/dev/null | head
+
+      - name: 编译 Mesa（AIR + freedreno）
+        run: |
+          export AIR=1 DRIVERS=softpipe,freedreno
+          tools/mk-mesa.sh
+          ls -l xnu-deps/build/mesa/out | head
+
+      - name: 编译 userland
+        run: |
+          GL=1 PREBUILT= bash userland/build.sh
+
+      - name: 编译 GPU userland（Metal）
+        run: tools/ace5/build-gpu-userland.sh local/components --metal
+
+      - name: 组装小 root（/redwood）
+        run: |
+          python3 tools/ace5/prepare-gpu-root.py \
+            --base userland/root \
+            --components local/components \
+            --ios-root ios165/rootfs \
+            --output local/root-daily \
+            --metal --app --display-test --wallpaper \
+            --compositor-threading inline \
+            --jobs tools/ace5/rc.jobs.daily
+
+      - name: 组装系统目录（无壁纸版，跳过 macOS sips）
+        run: |
+          python3 tools/ace5/prepare-gpu-system.py \
+            --ios ios165 \
+            --stage0 userland/obj/stage0 \
+            --triangle local/components/triangle_app \
+            --output local/system-metal
+
+      - name: 打包 APFS
+        run: |
+          python3 tools/apfs/mkapfs.py -z --plain fw -o local/root-daily.apfs redwood=local/root-daily
+          tools/apfs/check-image.sh local/root-daily.apfs redwood=local/root-daily
+          python3 tools/apfs/mkapfs.py -z -o local/system.apfs \
+            System=local/system-metal,manifest=ios165/system.manifest
+          tools/apfs/check-image.sh local/system.apfs \
+            System=local/system-metal,manifest=ios165/system.manifest
+          ls -lh local/*.apfs
+          sha256sum local/*.apfs > local/APFS-SHA256.txt
+          cat local/APFS-SHA256.txt
+
+      - name: 上传小 root
+        uses: actions/upload-artifact@v4
+        with:
+          name: ace5-root-daily
+          path: |
+            local/root-daily.apfs
+            local/APFS-SHA256.txt
+          if-no-files-found: error
+
+      - name: 上传系统镜像（约 2.5 GB）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ace5-system
+          path: |
+            local/system.apfs
+            local/APFS-SHA256.txt
+          if-no-files-found: error
+          compression-level: 0
