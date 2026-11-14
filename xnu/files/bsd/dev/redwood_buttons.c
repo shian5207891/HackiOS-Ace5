@@ -108,7 +108,8 @@ wr(vm_offset_t address, uint32_t value)
 #define ARB_CHANNEL(n)          (0x900 + 4 * (n))       /* core: [19:8] slave and peripheral, [24] interrupts go to the owner */
 #define ARB_CHANNEL_INTERRUPTS  (1u << 24)
 #define ARB_OWNER(n)            (0x700 + 4 * (n))       /* cnfg: [2:0] the system that may write through channel n */
-#define ARB_MAX_CHANNELS        512
+#define ARB_MAX_CHANNELS        1024            /* version 7 allows 1024 APIDs; SM8650 has 896 and the
+                                                 * power-on block is not among the first 512 */
 /* another SoC: the arbiter and its PMICs are at other addresses; the boot arguments say where */
 static uint32_t arb_core_phys = (uint32_t)ARB_CORE_PHYS;
 static uint32_t arb_cnfg_phys = (uint32_t)ARB_CNFG_PHYS;
