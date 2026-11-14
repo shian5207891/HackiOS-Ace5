@@ -36,7 +36,7 @@ jobs:
             flex bison m4 perl unzip zip \
             python3 python3-venv python3-pip \
             autoconf automake libtool pkg-config libncurses-dev \
-            meson ninja-build nasm bc cpio zlib1g-dev libssl-dev rsync
+            meson ninja-build nasm bc cpio zlib1g-dev libssl-dev rsync uuid-dev
           echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
 
       - name: Theos 工具链（Linux ARM64 cctools）
