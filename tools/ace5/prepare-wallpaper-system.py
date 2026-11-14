@@ -28,13 +28,36 @@ if report.exists() or report.is_symlink():
     ap.error('output report already exists')
 if args.output.resolve().is_relative_to(args.base.resolve()):
     ap.error('output must not be inside the baseline')
-if not (args.base / relative).is_dir() or not shutil.which('sips'):
-    ap.error('requires the local iOS 16 collection and macOS sips')
+if not (args.base / relative).is_dir():
+    ap.error('requires the local iOS 16 collection')
+
+# macOS uses sips; Linux uses Pillow with pillow-heif (the same conversion, no macOS)
+use_sips = bool(shutil.which('sips'))
+if not use_sips:
+    try:
+        import pillow_heif
+        from PIL import Image
+        pillow_heif.register_heif_opener()
+    except ImportError:
+        ap.error('requires macOS sips, or Pillow + pillow-heif on Linux')
 
 def properties(path):
-    result = subprocess.check_output(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight',
-                                      '-g', 'hasAlpha', '-g', 'profile', str(path)], text=True)
-    return dict(line.strip().split(': ', 1) for line in result.splitlines()[1:] if ': ' in line)
+    if use_sips:
+        result = subprocess.check_output(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight',
+                                          '-g', 'hasAlpha', '-g', 'profile', str(path)], text=True)
+        return dict(line.strip().split(': ', 1) for line in result.splitlines()[1:] if ': ' in line)
+    with Image.open(path) as image:
+        return {'pixelWidth': str(image.width), 'pixelHeight': str(image.height),
+                'hasAlpha': 'yes' if 'A' in image.getbands() else 'no',
+                'profile': 'embedded' if image.info.get('icc_profile') else 'none'}
+
+def to_png(source, target):
+    if use_sips:
+        subprocess.run(['sips', '-s', 'format', 'png', str(source), '--out', str(target)],
+                       check=True, stdout=subprocess.DEVNULL)
+        return
+    with Image.open(source) as image:
+        image.save(target, 'PNG', icc_profile=image.info.get('icc_profile'))
 
 shutil.copytree(args.base, args.output, symlinks=True, copy_function=os.link)
 converted = {}
@@ -51,8 +74,7 @@ for caml in sorted((args.output / relative).rglob('main.caml')):
         if source not in converted:
             if target.exists() or target.is_symlink():
                 ap.error(f'PNG already exists: {target}')
-            subprocess.run(['sips', '-s', 'format', 'png', str(source), '--out', str(target)],
-                           check=True, stdout=subprocess.DEVNULL)
+            to_png(source, target)
             before, after = properties(source), properties(target)
             if before != after:
                 ap.error(f'image dimensions, alpha or color profile changed: {source}: {before} -> {after}')
