@@ -60,6 +60,9 @@ tell(const char *format, ...)
 #define EPSS_FREQ_TABLE         0x100           /* a word per row: [31:30] clock source, [7:0] multiple of 19.2 MHz */
 #define EPSS_TABLE_ROWS         40
 #define EPSS_PERF_STATE         0x320           /* the row that is wanted */
+/* another SoC's EPSS is at another address and has another number of domains: the boot arguments say so */
+static uint32_t epss_phys = (uint32_t)EPSS_PHYS;
+static uint32_t epss_domains = EPSS_DOMAINS;
 #define XO_KHZ                  19200
 #define ALTERNATE_KHZ           300000          /* source 0: a fixed 300 MHz */
 
@@ -92,7 +95,7 @@ raise_domain(uint32_t domain, uint32_t cores)
 	uint32_t top = 0, top_khz = 0, was;
 	vm_offset_t base;
 
-	base = ml_io_map(EPSS_PHYS + domain * EPSS_DOMAIN_SIZE, EPSS_DOMAIN_SIZE);
+	base = ml_io_map((vm_offset_t)epss_phys + domain * EPSS_DOMAIN_SIZE, EPSS_DOMAIN_SIZE);
 	for (uint32_t row = 0; row < EPSS_TABLE_ROWS; row++) {
 		uint32_t entry = *(volatile uint32_t *)(base + EPSS_FREQ_TABLE + 4 * row);
 		uint32_t khz = (entry >> 30) ? XO_KHZ * (entry & 0xff) : ALTERNATE_KHZ;
@@ -558,7 +561,7 @@ void
 redwood_cpufreq_init(void)
 {
 	const ml_topology_info_t *topology = ml_get_topology_info();
-	uint32_t enabled = 0, cores[EPSS_DOMAINS] = { 0 }, before, here;
+	uint32_t enabled = 0, cores[8] = { 0 }, before, here;
 
 	load_start();
 	enabled = 2;
@@ -573,13 +576,22 @@ redwood_cpufreq_init(void)
 	if (!PE_parse_boot_argn("cpufreq", &enabled, sizeof(enabled)) || !enabled) {
 		return;
 	}
+	PE_parse_boot_argn("epss_base", &epss_phys, sizeof(epss_phys));
+	if (!PE_parse_boot_argn("epss_domains", &epss_domains, sizeof(epss_domains)) ||
+	    epss_domains == 0 || epss_domains > 8) {
+		epss_domains = EPSS_DOMAINS;
+	}
+	printf("cpufreq: EPSS at %#x, %u domains\n", epss_phys, epss_domains);
 	for (unsigned int i = 0; i < topology->num_cpus; i++) {
-		cores[domain_of(topology->cpus[i].phys_id)]++;
+		uint32_t d = domain_of(topology->cpus[i].phys_id);
+		if (d < 8) {
+			cores[d]++;
+		}
 	}
 	/* (whichever core this thread happens to be on, and stays on or not: it only goes to the log) */
 	here = (uint32_t)(__builtin_arm_rsr64("MPIDR_EL1") >> 8) & 0xff;
 	before = loop_speed();
-	for (uint32_t domain = 0; domain < EPSS_DOMAINS; domain++) {
+	for (uint32_t domain = 0; domain < epss_domains; domain++) {
 		if (cores[domain] != 0) {
 			raise_domain(domain, cores[domain]);
 		}
