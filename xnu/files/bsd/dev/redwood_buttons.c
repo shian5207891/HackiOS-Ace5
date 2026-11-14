@@ -495,6 +495,21 @@ buttons_thread(void *parameter, __unused wait_result_t result)
 	}
 
 	printf("buttons: step 2: look through the arbiter's table for the channels of the two peripherals\n");
+	if (arb_v7) {
+		/* what the APID map actually holds: a few raw entries, and how many are not zero */
+		uint32_t nz = 0, shown = 0;
+		for (uint32_t n = 0; n < channels; n++) {
+			uint32_t map = rd(arb_core + 0x2000UL + 4UL * n);
+			if (map == 0) continue;
+			nz++;
+			if (shown < 10) {
+				printf("buttons: map[%u] = %#x -> ppid %#x (slave %u, peripheral %#x)\n",
+				    n, map, (map >> 8) & 0xfff, (map >> 16) & 0xf, (map >> 8) & 0xff);
+				shown++;
+			}
+		}
+		printf("buttons: the APID map has %u entries not zero of %u\n", nz, channels);
+	}
 	find_channel(&pon, channels);
 	find_channel(&pin, channels);
 	if (steps < 3) {
