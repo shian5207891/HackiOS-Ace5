@@ -449,6 +449,10 @@ IOMobileFramebuffer::start(IOService * provider)
 	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
 	fDiff = gDiff != 0;
 	fDiffLeft = fDiffTop = ~0u;
+	/* what the tunables came out as: fb_hz is a boot-arg tunable, and if the beat below stays 60 Hz the
+	 * question is whether it was read at all. */
+	IOLog("MiniIOMobileFramebuffer: refresh %u Hz (fb_hz=%u), beat %u, threads %u, queue %u, filter %u\n",
+	    refreshHz(), gRefreshHz, gOnTheBeat, gThreads, gQueue, gFilter);
 	IOLog("MiniIOMobileFramebuffer: display %ux%u on a panel of %ux%u (%u bytes per row)\n", fWidth, fHeight,
 	    fPanelWidth, fPanelHeight, fRowBytes);
 
