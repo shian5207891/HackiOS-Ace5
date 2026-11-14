@@ -109,6 +109,11 @@ wr(vm_offset_t address, uint32_t value)
 #define ARB_CHANNEL_INTERRUPTS  (1u << 24)
 #define ARB_OWNER(n)            (0x700 + 4 * (n))       /* cnfg: [2:0] the system that may write through channel n */
 #define ARB_MAX_CHANNELS        512
+/* another SoC: the arbiter and its PMICs are at other addresses; the boot arguments say where */
+static uint32_t arb_core_phys = (uint32_t)ARB_CORE_PHYS;
+static uint32_t arb_cnfg_phys = (uint32_t)ARB_CNFG_PHYS;
+static uint32_t arb_observer_phys = (uint32_t)ARB_OBSERVER_PHYS;
+static uint32_t pon_id_override = 0x013, pin_id_override = 0x18d;
 
 #define OBSERVER_COMMAND        0x00
 #define OBSERVER_STATUS         0x08
@@ -453,11 +458,18 @@ buttons_thread(void *parameter, __unused wait_result_t result)
 	uint32_t steps = (uint32_t)(uintptr_t)parameter, version, channels;
 	bool pon_known, pin_known;
 
-	printf("buttons: step 1: map the PMIC arbiter (%#lx, %#lx, %#lx) and read its version\n", ARB_CORE_PHYS, ARB_CNFG_PHYS,
-	    ARB_OBSERVER_PHYS);
-	arb_core = ml_io_map(ARB_CORE_PHYS, ARB_CORE_SIZE);
-	arb_cnfg = ml_io_map(ARB_CNFG_PHYS, ARB_CNFG_SIZE);
-	arb_observer = ml_io_map(ARB_OBSERVER_PHYS, ARB_OBSERVER_SIZE);
+	PE_parse_boot_argn("spmi_core", &arb_core_phys, sizeof(arb_core_phys));
+	PE_parse_boot_argn("spmi_cnfg", &arb_cnfg_phys, sizeof(arb_cnfg_phys));
+	PE_parse_boot_argn("spmi_obsrvr", &arb_observer_phys, sizeof(arb_observer_phys));
+	PE_parse_boot_argn("btn_pon_id", &pon_id_override, sizeof(pon_id_override));
+	PE_parse_boot_argn("btn_pin_id", &pin_id_override, sizeof(pin_id_override));
+	pon.id = (uint16_t)pon_id_override;
+	pin.id = (uint16_t)pin_id_override;
+	printf("buttons: step 1: map the PMIC arbiter (%#x, %#x, %#x) and read its version\n",
+	    arb_core_phys, arb_cnfg_phys, arb_observer_phys);
+	arb_core = ml_io_map(arb_core_phys, ARB_CORE_SIZE);
+	arb_cnfg = ml_io_map(arb_cnfg_phys, ARB_CNFG_SIZE);
+	arb_observer = ml_io_map(arb_observer_phys, ARB_OBSERVER_SIZE);
 	version = rd(arb_core + ARB_VERSION);
 	channels = rd(arb_core + ARB_FEATURES) & 0x7ff;
 	printf("buttons: PMIC arbiter version %#x, %u channels\n", version, channels);
