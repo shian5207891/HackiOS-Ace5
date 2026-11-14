@@ -67,7 +67,7 @@ jobs:
           python3 -m venv local/image-venv
           . local/image-venv/bin/activate
           python3 -m pip install --upgrade pip
-          python3 -m pip install fonttools Pillow lzfse
+          python3 -m pip install fonttools Pillow lzfse pillow-heif
           echo "$PWD/local/image-venv/bin" >> "$GITHUB_PATH"
 
       - name: 从 Apple CDN 取 iOS 16.5 组件
@@ -109,14 +109,21 @@ jobs:
             --triangle local/components/triangle_app \
             --output local/system-metal
 
+      - name: 壁纸转换（Linux 路径：Pillow + pillow-heif，不需要 macOS sips）
+        run: |
+          python3 tools/ace5/prepare-wallpaper-system.py \
+            --base local/system-metal --output local/system-wallpaper
+          ls -l local/system-wallpaper-wallpaper.json
+          head -c 400 local/system-wallpaper-wallpaper.json
+
       - name: 打包 APFS
         run: |
           python3 tools/apfs/mkapfs.py -z --plain fw -o local/root-daily.apfs redwood=local/root-daily
           tools/apfs/check-image.sh local/root-daily.apfs redwood=local/root-daily
           python3 tools/apfs/mkapfs.py -z -o local/system.apfs \
-            System=local/system-metal,manifest=ios165/system.manifest
+            System=local/system-wallpaper,manifest=ios165/system.manifest
           tools/apfs/check-image.sh local/system.apfs \
-            System=local/system-metal,manifest=ios165/system.manifest
+            System=local/system-wallpaper,manifest=ios165/system.manifest
           ls -lh local/*.apfs
           sha256sum local/*.apfs > local/APFS-SHA256.txt
           cat local/APFS-SHA256.txt
