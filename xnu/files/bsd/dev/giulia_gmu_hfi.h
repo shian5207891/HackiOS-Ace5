@@ -256,8 +256,13 @@ static bool a750_hfi_query(struct a750_hfi *s, struct a750_memory *m, vm_offset_
     }
     if (good && stage>=16) good=a750_gx_prepare(s);
     if (good && stage>=15) {
-        /* Lowest stock operating point, 231 MHz / bandwidth index 1. */
-        uint32_t vote[]={0,1,1,1};
+        /* Stock operating point; 1 is the lowest (231 MHz). Boot-arg gpu_opp=N picks another, 1..12
+         * (231, 310, 366, 422, 500, 578, 629, 680, 720, 770, 834, 903 MHz). */
+        uint32_t opp=1;
+        PE_parse_boot_argn("gpu_opp",&opp,sizeof(opp));
+        if (opp<1||opp>12) opp=1;
+        a750_log("ace5-gpu: GX operating point %u requested (1 = 231 MHz, 12 = 903 MHz)\n",opp);
+        uint32_t vote[]={0,opp,opp,opp};
         good=a750_hfi_send(s,30,vote,4,false,NULL);
         bool requested=false;
         if (good) {
