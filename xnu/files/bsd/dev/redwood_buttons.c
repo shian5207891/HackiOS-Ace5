@@ -114,6 +114,12 @@ static uint32_t arb_core_phys = (uint32_t)ARB_CORE_PHYS;
 static uint32_t arb_cnfg_phys = (uint32_t)ARB_CNFG_PHYS;
 static uint32_t arb_observer_phys = (uint32_t)ARB_OBSERVER_PHYS;
 static uint32_t pon_id_override = 0x013, pin_id_override = 0x18d;
+/* Arbiter version 7 (SM8650 and later) moves the APID map and the observer offsets:
+ *   map     core + 0x2000 + 4*apid      (version 5: core + 0x900 + 4*channel)
+ *   owner   cnfg + 4*apid               (version 5: cnfg + 0x700 + 4*channel)
+ *   obs     obsrvr + 0x8000*ee + 0x20*apid  (version 5: 0x10000*ee + 0x80*channel)
+ * Linux drivers/spmi/spmi-pmic-arb.c, pmic_arb_offset_v7 / _pmic_arb_init_apid_v7. */
+static int arb_v7;
 
 #define OBSERVER_COMMAND        0x00
 #define OBSERVER_STATUS         0x08
@@ -169,7 +175,9 @@ static struct {
 static const char *
 spmi_read(const struct peripheral *p, uint8_t reg, uint8_t *bytes, uint32_t count)
 {
-	vm_offset_t channel = arb_observer + 0x10000UL * ARB_SYSTEM + 0x80UL * p->channel;
+	vm_offset_t channel = arb_v7
+	    ? arb_observer + 0x8000UL * ARB_SYSTEM + 0x20UL * p->channel
+	    : arb_observer + 0x10000UL * ARB_SYSTEM + 0x80UL * p->channel;
 	uint64_t start = mach_absolute_time(), now, interval, taken;
 	uint32_t status, data[2];
 	const char *problem = NULL;
@@ -219,12 +227,12 @@ static void
 find_channel(struct peripheral *p, uint32_t channels)
 {
 	for (uint32_t n = 0; n < channels; n++) {
-		uint32_t map = rd(arb_core + ARB_CHANNEL(n)), owner;
+		uint32_t map = rd(arb_core + (arb_v7 ? 0x2000UL + 4UL * n : ARB_CHANNEL(n))), owner;
 
 		if (map == 0 || ((map >> 8) & 0xfff) != p->id) {
 			continue;
 		}
-		owner = rd(arb_cnfg + ARB_OWNER(n)) & 7;
+		owner = rd(arb_cnfg + (arb_v7 ? 4UL * n : ARB_OWNER(n))) & 7;
 		printf("buttons: channel %u is %s (%#x); written by system %u%s\n", n, p->name, map, owner,
 		    (map & ARB_CHANNEL_INTERRUPTS) ? ", which also gets its interrupts" : "");
 		if (!p->found || owner == ARB_SYSTEM) {
@@ -473,10 +481,12 @@ buttons_thread(void *parameter, __unused wait_result_t result)
 	version = rd(arb_core + ARB_VERSION);
 	channels = rd(arb_core + ARB_FEATURES) & 0x7ff;
 	printf("buttons: PMIC arbiter version %#x, %u channels\n", version, channels);
-	if (version < ARB_VERSION_5 || version >= ARB_VERSION_7) {
-		printf("buttons: this driver knows version 5 of the arbiter only: no buttons\n");
+	arb_v7 = version >= ARB_VERSION_7;
+	if (version < ARB_VERSION_5 || version >= 0x80000000u) {
+		printf("buttons: this driver knows arbiter versions 5 to 7 only (saw %#x): no buttons\n", version);
 		goto out;
 	}
+	printf("buttons: arbiter layout in use: version %s\n", arb_v7 ? "7" : "5");
 	if (channels == 0 || channels > ARB_MAX_CHANNELS) {
 		channels = ARB_MAX_CHANNELS;
 	}
