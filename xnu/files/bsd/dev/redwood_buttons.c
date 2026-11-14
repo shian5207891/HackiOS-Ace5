@@ -94,7 +94,7 @@ wr(vm_offset_t address, uint32_t value)
 /* ---- the PMIC arbiter ---------------------------------------------------------------------------- */
 
 #define ARB_CORE_PHYS           0x0c440000UL    /* "core": the version, and which peripheral each channel is */
-#define ARB_CORE_SIZE           0x1100UL
+#define ARB_CORE_SIZE           0x3000UL        /* version 7 reads its APID map at core + 0x2000 (+ 4*apid) */
 #define ARB_CNFG_PHYS           0x0c40a000UL    /* "cnfg": which system owns each channel */
 #define ARB_CNFG_SIZE           0x1000UL
 #define ARB_OBSERVER_PHYS       0x0e600000UL    /* "obsrvr": 0x10000 per system, 0x80 per channel in it */
