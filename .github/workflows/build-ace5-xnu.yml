@@ -1,0 +1,84 @@
+name: Build Ace5 XNU kernel
+
+# 只编译内核，不碰设备。产物：mach.ace5-public
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xnu:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+
+    env:
+      THEOS: ${{ github.workspace }}/local/theos
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 腾空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
+                      /usr/share/swift /usr/local/share/chromium 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl xz-utils ca-certificates \
+            clang-18 lld-18 llvm-18 \
+            flex bison m4 perl unzip zip \
+            python3 python3-venv python3-pip \
+            autoconf automake libtool pkg-config libncurses-dev \
+            meson ninja-build nasm
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+
+      - name: Theos 工具链（Linux ARM64 cctools）
+        run: |
+          mkdir -p "$THEOS/toolchain" local
+          curl -fL --retry 3 -o local/ios-toolchain-arm64.tar.xz \
+            https://github.com/L1ghtmann/llvm-project/releases/download/test-210562a/iOSToolchain-aarch64.tar.xz
+          tar -xJf local/ios-toolchain-arm64.tar.xz -C "$THEOS/toolchain"
+          test -x "$THEOS/toolchain/linux/iphone/bin/ld" || { echo "::error::cctools ld 缺失"; exit 1; }
+          test -x "$THEOS/toolchain/linux/iphone/bin/ldid" || { echo "::error::ldid 缺失"; exit 1; }
+          ls -l "$THEOS/toolchain/linux/iphone/bin" | head
+
+      - name: Theos SDK（iPhoneOS16.5）
+        run: |
+          git clone --no-checkout --filter=blob:none https://github.com/theos/sdks.git "$THEOS/sdks"
+          git -C "$THEOS/sdks" checkout --detach 0222fd5413cf4b9af096f37b4621afa2688572f7
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" || { echo "::error::iPhoneOS16.5.sdk 缺失"; exit 1; }
+          du -sh "$THEOS/sdks/iPhoneOS16.5.sdk"
+
+      - name: 取 Apple 源码与主机工具（stage 1）
+        run: xnu-deps/setup.sh --stage1
+
+      - name: 拉 XNU 并打补丁
+        run: xnu/apply.sh
+
+      - name: 编译依赖库（stage 2）
+        run: xnu-deps/setup.sh --stage2
+
+      - name: 编译内核
+        run: |
+          ./xnu-build.sh -j"$(nproc)" build
+          mkdir -p out/giulia-kernel
+          SRC=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          [ -f "$SRC" ] || { echo "::error::内核产物不存在：$SRC"; find xnu-src -name 'mach.*' -size +1M | head; exit 1; }
+          cp "$SRC" out/giulia-kernel/mach.ace5-public
+          ls -l out/giulia-kernel/
+          sha256sum out/giulia-kernel/mach.ace5-public
+          file out/giulia-kernel/mach.ace5-public || true
+
+      - name: 上传内核
+        uses: actions/upload-artifact@v4
+        with:
+          name: ace5-xnu-kernel
+          path: out/giulia-kernel/
+          if-no-files-found: error
