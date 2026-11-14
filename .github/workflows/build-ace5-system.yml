@@ -83,9 +83,9 @@ jobs:
           tools/mk-mesa.sh
           ls -l xnu-deps/build/mesa/out | head
 
-      - name: 编译 userland
+      - name: 编译 userland（REST=1 加载全部 iOS 服务 + RWA_PACKED16 打开 16 位打包颜色格式）
         run: |
-          GL=1 PREBUILT= bash userland/build.sh
+          GL=1 PREBUILT= REST=1 RWA_PACKED16=1 bash userland/build.sh
 
       - name: 编译 GPU userland（Metal）
         run: tools/ace5/build-gpu-userland.sh local/components --metal
