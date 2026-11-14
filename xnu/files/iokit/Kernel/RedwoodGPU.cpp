@@ -1106,6 +1106,11 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		absolutetime_to_nanoseconds(gGPUStat.waiting, &waiting);
 		absolutetime_to_nanoseconds(gGPUStat.taking, &taking);
 		redwood_gpu_worked(&worked, &timed, by);
+		if (timed == 0) {
+			/* The A750 direct backend keeps its own fences; the core-scratch timestamps of
+			 * the redwood ring are never written there, so say so instead of reporting 0. */
+			IOLog("RedwoodGPU: the GPU's own work time is not measured on the direct backend\n");
+		}
 		uint64_t making;
 
 		absolutetime_to_nanoseconds(gGPUStat.making, &making);
