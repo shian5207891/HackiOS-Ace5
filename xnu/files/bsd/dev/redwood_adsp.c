@@ -1040,15 +1040,19 @@ redwood_adsp_fw_free(const uint8_t *data, uint64_t size)
 	kfree_data(ours, size);
 }
 
-/* A file of fw/ in the small image (ADSP=1 userland/build.sh puts fw-audio/ there), else of /fw on the root (above). */
+/* A file of fw/ in the small image (ADSP=1 userland/build.sh puts fw-audio/ there), else of the
+ * system image's volume (SYSTEM=1, prepare-gpu-system.py --fw). */
 extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
+static int image_disk;                  /* which of the two RAM disks fw/ was found in: 1 the small image, 0 the system image */
 static const uint8_t *
 image_file(const char *name, uint64_t *size)
 {
 	{
-		const uint8_t *data = redwood_image_file("fw", name, size, NULL);  /* (redwood_image.c) */
+		int disk = -1;
+		const uint8_t *data = redwood_image_file("fw", name, size, &disk);  /* (redwood_image.c) */
 
 		if (data != NULL) {
+			image_disk = disk;
 			return data;
 		}
 	}
@@ -1066,7 +1070,12 @@ image_file(const char *name, uint64_t *size)
 
 
 #define MDT_HASH(flags)         (((flags) >> 24 & 7) == 2)
-#define MAX_SEGMENTS            48
+/* The most program headers an .mdt may have, and the files adsp.b00.. it names are the headers'
+ * own indices (b00 being the header's 1876 bytes, b55 and the hash's b56 having no file to read).
+ * 48 was the POCO's; this phone's adsp.mdt has 57 -- 55 to load from 0x9df00000 to 0xa3180000,
+ * a hash table of 6488 bytes in the 57th (52 + 32 * 57 + 6488 = 8364, its own size) -- and with
+ * 48 it was read, found whole and then refused as a header: the 20:02 run's step 2. */
+#define MAX_SEGMENTS            64
 
 struct elf_segment {
 	uint32_t type, offset, vaddr, paddr, file_size, memory_size, flags, align;
@@ -1126,8 +1135,9 @@ step_firmware(void)
 	image.header_size = size;
 	count = size >= 52 + 2 * 32 ? header[44] | header[45] << 8 : 0;
 	if (memcmp(header, "\177ELF\1", 5) != 0 || count < 3 || count > MAX_SEGMENTS || 52 + 32 * count > size || size > PAGE_SIZE) {
-		printf("adsp: %u: fw/adsp.mdt is not such a header (%02x %02x %02x %02x, %u segments, %llu bytes)\n", step, header[0],
-		    header[1], header[2], header[3], count, size);
+		printf("adsp: %u: fw/adsp.mdt is not a header of this kind (%02x %02x %02x %02x, %u segments of at most %u, %llu "
+		    "bytes of a page's %u)\n", step, header[0], header[1], header[2], header[3], count, MAX_SEGMENTS, size,
+		    PAGE_SIZE);
 		goto fail;
 	}
 	for (uint32_t i = 0; i < count; i++) {
@@ -1178,8 +1188,9 @@ step_firmware(void)
 	image.header_size = size;
 	image.size = ((highest + 0xfff) & ~0xfffu) - ADSP_MEMORY;
 	printf("adsp: %u: the image is whole (%s): a header of %llu bytes (%u of hashes), %u segments, %llu bytes of files, %#x "
-	    "bytes of the DSP's %#x from %#x\n", step, from_root ? "from /fw on the root" : "from the small image", size, hashes,
-	    image.segments, files, image.size, ADSP_MEMORY_SIZE, ADSP_MEMORY);
+	    "bytes of the DSP's %#x from %#x\n", step,
+	    image_disk == 0 ? "fw/ of the system image" : "fw/ of the small image", size, hashes, image.segments, files,
+	    image.size, ADSP_MEMORY_SIZE, ADSP_MEMORY);
 	return true;
 fail:
 	image_forget();
