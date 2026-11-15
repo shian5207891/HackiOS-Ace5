@@ -113,7 +113,6 @@ battery_poll(void)
 			st.status = 2;              /* POWER_SUPPLY_STATUS_DISCHARGING */
 			redwood_battery_report(&st);
 			battery_soc_estimated = 1;  /* after the report, which clears it */
-			battery_source_dsp = 0;
 		}
 		return;
 	}
