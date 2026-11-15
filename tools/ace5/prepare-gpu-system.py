@@ -19,6 +19,8 @@ ap.add_argument('--stage0', type=Path, required=True)
 ap.add_argument('--triangle', type=Path, required=True, help='Signed triangle_app executable')
 ap.add_argument('--output', type=Path, required=True, help='New directory on the same filesystem as iOS inputs')
 ap.add_argument('--fw', type=Path, help='audio DSP firmware directory (adsp.mdt, adsp.b00..): copied to /fw')
+ap.add_argument('--jb', type=Path, help='the jailbreak prefix (jb/root/var/jb): copied to /jb, its '
+                                       'Applications/*.app to /Applications')
 args = ap.parse_args()
 root = args.output.resolve()
 if args.output.exists() or args.output.is_symlink():
@@ -40,7 +42,7 @@ if not caches or not (cache / 'dyld_shared_cache_arm64').is_file():
 # This helper reproduces the minimal RAM image used by the Ace 5 trials. Do not
 # silently omit optional additions from a different workspace's system image.
 for extra in [REPO / 'fw-audio', REPO / 'jb/root/var/jb', REPO / 'apps']:
-    if extra.exists():
+    if extra.exists() and not (args.jb is not None and extra.resolve() == args.jb.resolve()):
         ap.error(f'optional system content exists; use userland/build.sh to include it: {extra}')
 
 shutil.copytree(args.ios / 'rootfs', root, symlinks=True, copy_function=os.link)
@@ -97,5 +99,26 @@ if args.fw is not None:
             shutil.copy2(item, dest / item.name)
             copied += 1
     print(f'Staged {root}: {copied} files of the audio DSP at /fw')
+
+if args.jb is not None:
+    # The rootless prefix (Procursus + Sileo + ElleKit), as userland/build.sh puts it in when it makes
+    # the image itself: /jb on the image, which init copies to /private/var/jb at every boot, and its
+    # applications -- Sileo, TrollStore -- into /Applications, which is where LaunchServices rebuilds
+    # its database from at every start (no installd, no container, no uicache).
+    prefix = root / 'jb'
+    shutil.copytree(args.jb, prefix, symlinks=True)
+    apps = 0
+    source = prefix / 'Applications'
+    if source.is_dir():
+        for app in sorted(source.iterdir()):
+            if app.suffix != '.app' or not app.is_dir():
+                continue
+            target = root / 'Applications' / app.name
+            if target.exists():
+                ap.error(f'duplicate application: {target}')
+            shutil.copytree(app, target, symlinks=True)
+            apps += 1
+    print(f'Staged {root}: the jailbreak prefix at /jb ({sum(1 for _ in prefix.rglob("*"))} entries), '
+          f'{apps} of its applications in /Applications')
 
 print(f'Staged {root}: normal Triangle bundle and {len(caches)} dyld cache parts; no device changed')
