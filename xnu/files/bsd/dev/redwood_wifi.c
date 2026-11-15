@@ -4436,6 +4436,8 @@ redwood_wifi_init(void)
  *
  * Boot-arg wifi_pcie=N, deliberately separate from wifi=1: this touches power and resets, and a mistake
  * here hangs the bus. Step by step, so that the last line printed says where it stopped. */
+#include "redwood_pcie_table.h"
+
 #define GCC_PA          0x100000UL
 #define PCIE_PARF_PA    0x1c00000UL
 #define PCIE_PHY_PA     0x1c06000UL
@@ -4521,6 +4523,63 @@ redwood_pcie_probe(uint32_t step)
 	printf("wifi: PCIe: ELBI %#x\n", rd(elbi));
 	if (step < 5) return;
 
-	printf("wifi: PCIe: step 5 (the PHY sequence and link training) is not written yet\n");
+	/* Step 5: PERST, then the PHY's own sequence.
+	 *
+	 * The 115 writes below are the board's, taken from its device tree (qcom,phy-sequence) and
+	 * generated into redwood_pcie_table.h -- the same table the boot loader uses. The order matters
+	 * and is the one Android's log shows: assert the endpoint's reset, bring the PHY up, release the
+	 * reset, train the link. */
+	{
+		printf("wifi: PCIe: step 5: PERST (gpio 94) low, hold, then high\n");
+		if (tlmm != 0) {
+			wr(tlmm + 0x1000UL * 94UL, 0x2 | (3u << 2) | (2u << 6) | (1u << 9));
+			wr(tlmm + 0x1000UL * 94UL + 4, 0);        /* PERST asserted (low) */
+			delay_for_interval(10, NSEC_PER_MSEC);
+			wr(tlmm + 0x1000UL * 94UL + 4, 2);        /* and released */
+			delay_for_interval(20, NSEC_PER_MSEC);
+			printf("wifi: PCIe: PERST released, level %u\n", rd(tlmm + 0x1000UL * 94UL + 4) & 1);
+		}
+
+		printf("wifi: PCIe: PHY power-down first (offset 0x240)\n");
+		wr(phy + 0x240UL, 3);                         /* the sequence's own first write: powered down */
+		delay_for_interval(1, NSEC_PER_MSEC);
+
+		printf("wifi: PCIe: applying %u PHY register writes\n", (unsigned) (sizeof(pcie_phy_sequence) / sizeof(pcie_phy_sequence[0])));
+		for (unsigned i = 0; i < sizeof(pcie_phy_sequence) / sizeof(pcie_phy_sequence[0]); i++) {
+			wr(phy + pcie_phy_sequence[i].offset, pcie_phy_sequence[i].value);
+			if (pcie_phy_sequence[i].delay != 0) {
+				delay_for_interval(pcie_phy_sequence[i].delay, NSEC_PER_MSEC);
+			}
+		}
+		printf("wifi: PCIe: PHY sequence applied, last offset %#x\n",
+		    pcie_phy_sequence[sizeof(pcie_phy_sequence) / sizeof(pcie_phy_sequence[0]) - 1].offset);
+		if (step < 6) return;
+
+		/* the PHY says whether its PLL locked: bit 6 of the status register the device tree names */
+		{
+			uint32_t status = 0;
+
+			for (unsigned i = 0; i < 100; i++) {
+				status = rd(phy + 0x214UL);
+				if (status & (1u << 6)) {
+					break;
+				}
+				delay_for_interval(10, NSEC_PER_MSEC);
+			}
+			printf("wifi: PCIe: PHY status %#x: PLL %s\n", status,
+			    (status & (1u << 6)) ? "locked" : "NOT locked");
+			if ((status & (1u << 6)) == 0) {
+				printf("wifi: PCIe: stopping here (no PLL, so no link)\n");
+				return;
+			}
+		}
+
+		/* the link's own state: PARF records the LTSSM, and 0x111 at the bottom means L0 (up) */
+		{
+			uint32_t ltssm = rd(parf + 0x1b0UL);
+
+			printf("wifi: PCIe: PARF LTSSM %#x%s\n", ltssm, (ltssm & 0xff) == 0x11 ? " (L0: the link is up)" : " (not L0)");
+		}
+	}
 }
 
