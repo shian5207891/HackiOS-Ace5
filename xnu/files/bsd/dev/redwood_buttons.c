@@ -4,12 +4,16 @@
  * every address below belongs to this phone.
  *
  * None of the three is a pin of the SoC. They are inputs of two of the power management chips:
- *   power        KPDPWR_N of the power-on block ("PON") of the PMK8350
- *                (SM8650/Ace 5: RESIN is VOLUME UP and PM8550 GPIO6 is VOLUME DOWN, the other way
- *                 round from the POCO this file came from -- read out of Android's own input devices:
- *                 pmic_resin -> KEY_VOLUMEUP, gpio-keys -> KEY_VOLUMEDOWN)
- *   volume up    RESIN_N of the same block
- *   volume up    GPIO6 of the PM7325, pulled up; the key pulls it low
+ *   power        KPDPWR_N of the power-on block ("PON") of the PMK8550 (PMIC slave 0, 0x1300)
+ *   volume down  RESIN_N of the same block
+ *   volume up    GPIO6 of the PM8550 (PMIC slave 1, 0x8d00), pulled up; the key pulls it low
+ * The Ace 5's own device tree says so, twice over: pon_hlos@1300/resin has linux,code 0x73
+ * (KEY_VOLUMEDOWN, 115) and gpio_keys/vol_up has linux,code 0x72 (KEY_VOLUMEUP, 114) with
+ * gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>, whose pinctrl node (key_vol_up_default, pins =
+ * "gpio6") is bias-pull-up and input-enable. This file had it the other way round for a while --
+ * the POCO it was written for wires RESIN to volume up -- and the 20:02 run showed the cost: the
+ * volume-down key came out as "volume up PRESSED" while the GPIO it looked at (peripheral 0x88,
+ * GPIO1: an input pulled down, on no key at all) never moved. Swapped back here.
  * Both chips sit on the SPMI bus (slaves 0 and 1), and the way to that bus is the SoC's "PMIC
  * arbiter": it owns the bus and gives each of the systems on the chip (this one, the modem, the
  * always-on processor, TrustZone...) a set of registers per PMIC peripheral -- a "channel" -- to
@@ -167,8 +171,8 @@ struct peripheral {
 	uint16_t        channel;
 	bool            found;
 };
-static struct peripheral pon = { .name = "the PMK8350's power-on block", .id = 0x013 };          /* registers 0x1300 of slave 0 */
-static struct peripheral pin = { .name = "GPIO6 of the PM7325", .id = 0x18d };                   /* registers 0x8d00 of slave 1 */
+static struct peripheral pon = { .name = "the PMK8550's power-on block", .id = 0x013 };          /* registers 0x1300 of slave 0 */
+static struct peripheral pin = { .name = "GPIO6 of the PM8550", .id = 0x18d };                   /* registers 0x8d00 of slave 1 */
 
 /* How the reads have gone: said once a minute. */
 static struct {
@@ -357,7 +361,7 @@ buttons_poll(void)
 		problem = spmi_read(&pon, REG_RT_STATUS, &status, 1);
 		if (problem == NULL) {
 			button_look(&power, status & PON_KPDPWR);
-			button_look(&volume_up, status & PON_RESIN);
+			button_look(&volume_down, status & PON_RESIN);
 		} else if (said < 8) {
 			said++;
 			printf("buttons: reading %s: %s\n", pon.name, problem);
@@ -366,7 +370,7 @@ buttons_poll(void)
 	if (volume_up.usable) {
 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
 		if (problem == NULL) {
-			button_look(&volume_down, btn_pin_high ? (status & GPIO_LEVEL) : !(status & GPIO_LEVEL));
+			button_look(&volume_up, btn_pin_high ? (status & GPIO_LEVEL) : !(status & GPIO_LEVEL));
 		} else if (said < 8) {
 			said++;
 			printf("buttons: reading %s: %s\n", pin.name, problem);
@@ -431,8 +435,10 @@ pin_input(void)
 	const char *problem;
 	uint8_t c[8], status = 0;
 	unsigned mode, pull;
+	unsigned base = (pin.id & 0xff) << 8;
 
-	printf("buttons: next: read the setup and the level of %s (registers 0x8d40 to 0x8d47, 0x8d10)\n", pin.name);
+	printf("buttons: next: read the setup and the level of %s (registers %#x..%#x, %#x)\n", pin.name, base + GPIO_REG_MODE,
+	    base + GPIO_REG_MODE + 7, base + REG_RT_STATUS);
 	problem = spmi_read(&pin, GPIO_REG_MODE, c, 8);
 	if (problem == NULL) {
 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
@@ -443,16 +449,17 @@ pin_input(void)
 	}
 	mode = c[0] & 3;
 	pull = c[GPIO_REG_PULL - GPIO_REG_MODE] & 7;
-	printf("buttons: volume down's pin: mode %u (%s), supply %u, pull %u (%s), %s; registers 0x40.. = %02x %02x %02x %02x %02x %02x "
+	printf("buttons: volume up's pin: mode %u (%s), supply %u, pull %u (%s), %s; registers %#x.. = %02x %02x %02x %02x %02x %02x "
 	    "%02x %02x; level %s\n", mode, mode == 0 ? "input" : mode == 1 ? "output" : mode == 2 ? "input and output" : "analog",
 	    c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7, pull, pull < 4 ? "up" : pull == 4 ? "down" : "none",
-	    (c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) ? "enabled" : "DISABLED", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+	    (c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) ? "enabled" : "DISABLED", base + GPIO_REG_MODE, c[0], c[1], c[2], c[3],
+	    c[4], c[5], c[6], c[7],
 	    (status & GPIO_LEVEL) ? (btn_pin_high ? "high (held)" : "high (released)")
 	                          : (btn_pin_high ? "LOW (released)" : "LOW (held)"));
 	/* a pull-up means the key pulls the pin low; a pull-down (or none) means it pulls it high */
 	if (mode != 0 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) || (!btn_pin_high && pull >= 4)) {
-		printf("buttons: volume down's pin is not an enabled input the way this phone wires it "
-		    "(mode %u, pull %u, btn_pin_high=%d): volume down is left alone\n", mode, pull, btn_pin_high);
+		printf("buttons: volume up's pin is not an enabled input the way this phone wires it "
+		    "(mode %u, pull %u, btn_pin_high=%d): volume up is left alone\n", mode, pull, btn_pin_high);
 		return;
 	}
 	volume_up.usable = true;
