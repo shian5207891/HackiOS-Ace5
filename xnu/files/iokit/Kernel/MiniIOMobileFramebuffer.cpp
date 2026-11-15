@@ -241,6 +241,7 @@ public:
 	uint32_t        fSwapsShown;
 	uint32_t        fLayersShown;           /* which layers the last swap had a surface in */
 	bool            fGraphics;              /* the text console has been told to stop */
+	bool            fPanelOff;              /* RequestPowerChange(0): the power key's blank */
 	/*
 	 * A frame goes to the panel when the GPU is done with it: a thread of ours waits for that
 	 * and copies it there, and whoever made the frame is back at the next one meanwhile. One
@@ -734,6 +735,10 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
 	int32_t px0, py0, px1, py1, cx0, cx1;
 	bool filter = gFilter != 0;
 	RowJob job;
+
+	if (fPanelOff) {
+		return;                 /* asleep: what is on the panel is the black put there when it went off */
+	}
 
 	if (sw <= 0 || sh <= 0) {
 		sx = sy = 0;
@@ -1403,9 +1408,32 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	case kFBMethodSwapSignal:
 	case kFBMethodSwapCancel:
 	case kFBMethodSwapCancelAll:
-	case kFBMethodRequestPowerChange:
 	case kFBMethodChangeFrameInfo:
 		return kIOReturnSuccess;
+	case kFBMethodRequestPowerChange: {
+		/* backboardd asks for 0 when the display goes to sleep (the power key, auto-lock) and
+		 * non-zero when it wakes. Nothing here can turn the AMOLED panel off -- there is no DSI
+		 * driver, the boot loader's picture stays on -- so the picture is painted black instead,
+		 * which on AMOLED is the same thing for the eye and for the battery. */
+		bool off = args->scalarInputCount > 0 && in[0] == 0;
+
+		IOLockLock(fLock);
+		if (off != fPanelOff) {
+			fPanelOff = off;
+			if (off && fBase != NULL) {
+				for (uint32_t y = 0; y < fPanelHeight; y++) {
+					uint32_t * row = (uint32_t *) (fBase + (size_t) y * fRowBytes);
+					for (uint32_t x = 0; x < fPanelWidth; x++) {
+						row[x] = 0;
+					}
+				}
+			}
+			IOLog("MiniIOMobileFramebuffer: display %s (RequestPowerChange %d)\n", off ? "off" : "on",
+			    args->scalarInputCount > 0 ? (int) in[0] : -1);
+		}
+		IOLockUnlock(fLock);
+		return kIOReturnSuccess;
+	}
 
 	case kFBMethodNotifications:                    /* in: callback (0 = off), its argument, type, 0 */
 		if (args->scalarInputCount < 3 || in[2] >= kFBNotifyTypes) {
