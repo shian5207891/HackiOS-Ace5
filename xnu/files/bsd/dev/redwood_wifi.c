@@ -4139,6 +4139,7 @@ redwood_wifi_quiesce(void)
 	dsp_shutdown("the kernel is on its way back to the loader");
 }
 
+static void redwood_pcie_probe(uint32_t step);
 #define REDWOOD_SOC_BASE        0x00400000ul    /* where the loader says the phone's peripherals begin (its "redwood") */
 
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
@@ -4280,6 +4281,13 @@ redwood_wifi_init(void)
 	 * takes the kernel down before a line is logged. Until there is a driver for the new one, refuse:
 	 * wifi=1 then costs a boot, not a hang. wifi_force=1 overrides, for the port's own work. */
 	{
+		uint32_t pstep = 0;
+		if (PE_parse_boot_argn("wifi_pcie", &pstep, sizeof(pstep)) && pstep) {
+			redwood_pcie_probe(pstep);
+			return;
+		}
+	}
+	{
 		uint32_t force = 0;
 		if (!(PE_parse_boot_argn("wifi_force", &force, sizeof(force)) && force)) {
 			printf("wifi: this phone's radio is a WCN7850 (PCIe, BHI/MHI) and this driver is the POCO's WCN6750 "
@@ -4406,3 +4414,110 @@ redwood_wifi_init(void)
  *     engines and the rings of the data path. Those can be looked at in turn as well, at the
  *     price of a thread that never sleeps while the link is up.
  */
+
+/* ---- PCIe0, for the WCN7850 ---------------------------------------------------------------------------
+ *
+ * The Ace 5's radio is a PCIe endpoint (qcom,cnss-kiwi, device id 0x1107). Before anything on it can be
+ * read, PCIe0 has to be powered and out of reset. Every number below comes from this board's own device
+ * tree (qcom,pcie@1c00000) or from mainline drivers/clk/qcom/gcc-sm8650.c -- none of it is guessed:
+ *
+ *   PARF      0x1c00000  (0x3000)      PHY   0x1c06000 (0x2000)
+ *   DBI       0x60000000 (0xf1d)       ELBI  0x60001000 (0x1000)
+ *   GCC       0x100000   (0xc0000)
+ *     PCIe0 core reset   0x6b000       PCIe0 PHY reset   0x6c01c
+ *     PHY common reset   0x6f000       PHY com reset     0x6f010
+ *     PCIe0 GDSCR        0x6b004       PCIe0 PHY GDSCR   0x6c000
+ *     clock branches:    0x6b020 slv_axi, 0x6b02c mstr_axi, 0x6b038 cfg_ahb,
+ *                        0x6b048 pipe,   0x6b054 phy_rchng, 0x10058 cnoc_sf_axi
+ *   WLAN_EN   TLMM GPIO 16 (0x0f100000 + 0x1000 * 16)
+ *
+ * Boot-arg wifi_pcie=N, deliberately separate from wifi=1: this touches power and resets, and a mistake
+ * here hangs the bus. Step by step, so that the last line printed says where it stopped. */
+#define GCC_PA          0x100000UL
+#define PCIE_PARF_PA    0x1c00000UL
+#define PCIE_PHY_PA     0x1c06000UL
+#define PCIE_ELBI_PA    0x60001000UL
+#define TLMM_PA         0x0f100000UL
+
+#define GCC_PCIE0_BCR       0x6b000UL
+#define GCC_PCIE0_PHY_BCR   0x6c01cUL
+#define GCC_PCIE_PHY_BCR    0x6f000UL
+#define GCC_PCIE_PHY_COM    0x6f010UL
+#define GCC_PCIE0_GDSCR     0x6b004UL
+#define GCC_PCIE0_PHY_GDSCR 0x6c000UL
+
+static const struct { uint32_t off; const char *name; } pcie_clocks[] = {
+	{ 0x6b020UL, "slv_axi" }, { 0x6b02cUL, "mstr_axi" }, { 0x6b038UL, "cfg_ahb" },
+	{ 0x6b048UL, "pipe"    }, { 0x6b054UL, "phy_rchng"}, { 0x10058UL, "cnoc_sf_axi" },
+};
+
+static void
+redwood_pcie_probe(uint32_t step)
+{
+	vm_offset_t gcc, parf, phy, elbi, tlmm;
+	uint32_t v;
+
+	printf("wifi: PCIe0: step %u of the radio's bring-up\n", step);
+
+	gcc = ml_io_map(GCC_PA, 0xc0000UL);
+	if (gcc == 0) { printf("wifi: PCIe: GCC did not map\n"); return; }
+
+	printf("wifi: PCIe: GDSCR before: core %#x, phy %#x\n",
+	    rd(gcc + GCC_PCIE0_GDSCR), rd(gcc + GCC_PCIE0_PHY_GDSCR));
+
+	/* power on: clear the software collapse bit (31) of each rail */
+	v = rd(gcc + GCC_PCIE0_GDSCR);      wr(gcc + GCC_PCIE0_GDSCR, v & ~(1u << 31));
+	v = rd(gcc + GCC_PCIE0_PHY_GDSCR);  wr(gcc + GCC_PCIE0_PHY_GDSCR, v & ~(1u << 31));
+	delay_for_interval(2, NSEC_PER_MSEC);
+	printf("wifi: PCIe: GDSCR after:  core %#x, phy %#x\n",
+	    rd(gcc + GCC_PCIE0_GDSCR), rd(gcc + GCC_PCIE0_PHY_GDSCR));
+	if (step < 2) return;
+
+	/* clocks: the vote register first (these branches are gated by a vote), then the branch itself */
+	wr(gcc + 0x52008UL, 0x10);            /* aux / slv_q2a family votes */
+	wr(gcc + 0x52000UL, 0x10);            /* phy_rchng family votes */
+	for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
+		wr(gcc + pcie_clocks[i].off, 1);
+	}
+	delay_for_interval(2, NSEC_PER_MSEC);
+	printf("wifi: PCIe: clocks on (slv_axi %#x mstr_axi %#x cfg_ahb %#x pipe %#x phy_rchng %#x cnoc_sf %#x)\n",
+	    rd(gcc + 0x6b020UL), rd(gcc + 0x6b02cUL), rd(gcc + 0x6b038UL),
+	    rd(gcc + 0x6b048UL), rd(gcc + 0x6b054UL), rd(gcc + 0x10058UL));
+	if (step < 3) return;
+
+	/* out of reset: BCR bit 0 asserts, 0 releases */
+	wr(gcc + GCC_PCIE0_BCR, 0);
+	wr(gcc + GCC_PCIE0_PHY_BCR, 0);
+	wr(gcc + GCC_PCIE_PHY_BCR, 0);
+	wr(gcc + GCC_PCIE_PHY_COM, 0);
+	delay_for_interval(10, NSEC_PER_MSEC);
+	printf("wifi: PCIe: resets released\n");
+	if (step < 4) return;
+
+	/* the radio's own enable line: TLMM GPIO 16, a plain output, high */
+	tlmm = ml_io_map(TLMM_PA, 0x100000UL);
+	if (tlmm != 0) {
+		wr(tlmm + 0x1000UL * 16UL, 0x2 | (3u << 2) | (2u << 6) | (1u << 9));  /* no pull, func 3=GPIO, 8mA, out */
+		wr(tlmm + 0x1000UL * 16UL + 4, 2);
+		printf("wifi: PCIe: WLAN_EN (gpio 16) high, level now %u\n", rd(tlmm + 0x1000UL * 16UL + 4) & 1);
+	} else {
+		printf("wifi: PCIe: TLMM did not map\n");
+	}
+	delay_for_interval(20, NSEC_PER_MSEC);
+
+	parf = ml_io_map(PCIE_PARF_PA, 0x3000UL);
+	phy  = ml_io_map(PCIE_PHY_PA, 0x2000UL);
+	elbi = ml_io_map(PCIE_ELBI_PA, 0x1000UL);
+	if (parf == 0 || phy == 0 || elbi == 0) {
+		printf("wifi: PCIe: a block did not map (parf %#lx phy %#lx elbi %#lx)\n", parf, phy, elbi);
+		return;
+	}
+	printf("wifi: PCIe: PARF alive? 0x0 = %#x, 0x8 = %#x\n", rd(parf), rd(parf + 8));
+	printf("wifi: PCIe: PHY  status %#x (bit6 = PLL lock), power %#x\n",
+	    rd(phy + 0x214), rd(phy + 0x240));
+	printf("wifi: PCIe: ELBI %#x\n", rd(elbi));
+	if (step < 5) return;
+
+	printf("wifi: PCIe: step 5 (the PHY sequence and link training) is not written yet\n");
+}
+
