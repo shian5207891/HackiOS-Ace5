@@ -1071,6 +1071,139 @@ load_tweaks(void)
 	}
 }
 
+
+/* ---- the Dynamic Island's pill ----------------------------------------------------------------------
+ *
+ * The real one is a 14 Pro feature: SpringBoard asks MobileGestalt whether this device has an island and
+ * draws it only if the answer is yes -- an answer this hardware cannot make true (booting with
+ * machine_model=iPhone15,2 made the kernel give up before it printed its second line). What can be done
+ * without that is the shape: a black rounded pill of the island's size over the status bar, in a window
+ * of our own above everything SpringBoard draws. It is decoration: nothing opens from it, no live
+ * activity appears in it, and it does not grow. island=0 in the kernel's boot arguments leaves it out;
+ * island_width / island_height / island_top (in pixels) move it.
+ */
+#define ISLAND_DEFAULT_WIDTH    378.0   /* 126 points at 3x: the 14 Pro's island */
+#define ISLAND_DEFAULT_HEIGHT   111.0   /* 37 points */
+#define ISLAND_DEFAULT_TOP      33.0    /* 11 points below the top edge */
+
+static id island_window;
+
+static double
+boot_double(const char *name, double fallback)
+{
+	char args[1024] = "", pattern[64];
+	size_t size = sizeof(args) - 1;
+	const char *at;
+	double value = 0;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0) {
+		return fallback;
+	}
+	snprintf(pattern, sizeof(pattern), "%s=", name);
+	if ((at = strstr(args, pattern)) == NULL) {
+		return fallback;
+	}
+	if (at != args && at[-1] != ' ') {
+		return fallback;
+	}
+	if (sscanf(at + strlen(pattern), "%lf", &value) != 1 || value <= 0) {
+		return fallback;
+	}
+	return value;
+}
+
+static bool
+boot_flag(const char *name)
+{
+	char args[1024] = "", pattern[64], *at;
+	size_t size = sizeof(args) - 1;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0) {
+		return false;
+	}
+	snprintf(pattern, sizeof(pattern), "%s=", name);
+	if ((at = strstr(args, pattern)) == NULL) {
+		return false;
+	}
+	return at == args || at[-1] == ' ';
+}
+
+typedef struct { double x, y, width, height; } redwood_rect;
+
+static void
+island_install(void)
+{
+	id (*send_id)(id, SEL) = (id (*)(id, SEL)) objc_msgSend;
+	void (*send_void_id)(id, SEL, id) = (void (*)(id, SEL, id)) objc_msgSend;
+	void (*send_void_bool)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL)) objc_msgSend;
+	void (*send_void_double)(id, SEL, double) = (void (*)(id, SEL, double)) objc_msgSend;
+	id (*send_id_rect)(id, SEL, redwood_rect) = (id (*)(id, SEL, redwood_rect)) objc_msgSend;
+	redwood_rect (*send_rect)(id, SEL) = (redwood_rect (*)(id, SEL)) objc_msgSend;
+
+	Class UIWindowClass = objc_getClass("UIWindow");
+	Class UIViewClass = objc_getClass("UIView");
+	Class UIColorClass = objc_getClass("UIColor");
+	Class UIScreenClass = objc_getClass("UIScreen");
+	Class UIApplicationClass = objc_getClass("UIApplication");
+
+	if (UIWindowClass == Nil || UIViewClass == Nil || UIColorClass == Nil ||
+	    UIScreenClass == Nil || UIApplicationClass == Nil) {
+		say("redwood: island: no UIKit\n");
+		return;
+	}
+
+	id screen = send_id(UIScreenClass, sel_registerName("mainScreen"));
+	if (screen == nil) {
+		say("redwood: island: no screen\n");
+		return;
+	}
+	redwood_rect bounds = send_rect(screen, sel_registerName("bounds"));
+	double width = boot_double("island_width", ISLAND_DEFAULT_WIDTH);
+	double height = boot_double("island_height", ISLAND_DEFAULT_HEIGHT);
+	double top = boot_double("island_top", ISLAND_DEFAULT_TOP);
+
+	id window = send_id(send_id(UIWindowClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), bounds);
+	if (window == nil) {
+		say("redwood: island: no window\n");
+		return;
+	}
+	/* above the status bar, below the alerts that must be able to cover it */
+	send_void_double(window, sel_registerName("setWindowLevel:"), 10000000.0 + 1.0);
+
+	/* iOS 13 and later: a window with no scene never appears */
+	id app = send_id(UIApplicationClass, sel_registerName("sharedApplication"));
+	if (app != nil) {
+		id scenes = send_id(app, sel_registerName("connectedScenes"));
+		if (scenes != nil) {
+			id any = send_id(scenes, sel_registerName("anyObject"));
+			if (any != nil) {
+				send_void_id(window, sel_registerName("setWindowScene:"), any);
+			}
+		}
+	}
+
+	redwood_rect pill = { (bounds.width - width) / 2.0, top, width, height };
+	id view = send_id(send_id(UIViewClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), pill);
+	if (view == nil) {
+		say("redwood: island: no view\n");
+		return;
+	}
+	id black = send_id(UIColorClass, sel_registerName("blackColor"));
+	send_void_id(view, sel_registerName("setBackgroundColor:"), black);
+	id layer = send_id(view, sel_registerName("layer"));
+	if (layer != nil) {
+		send_void_double(layer, sel_registerName("setCornerRadius:"), height / 2.0);
+		send_void_bool(layer, sel_registerName("setMasksToBounds:"), YES);
+	}
+	send_void_id(window, sel_registerName("addSubview:"), view);
+	send_void_bool(window, sel_registerName("setHidden:"), NO);
+	/* it must never swallow a touch: everything under it is SpringBoard's */
+	send_void_bool(window, sel_registerName("setUserInteractionEnabled:"), NO);
+
+	island_window = window;
+	say("redwood: island: %0.fx%0.f at y=%0.f painted over the status bar (decoration only)\n", width, height, top);
+}
+
 __attribute__((constructor))
 static void
 redwood_springboard_init(void)
@@ -1244,4 +1377,9 @@ redwood_springboard_init(void)
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 		unlock();
 	});
+	if (!boot_flag("island")) {
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 12 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			island_install();
+		});
+	}
 }
