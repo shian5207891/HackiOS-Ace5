@@ -18,6 +18,7 @@ ap.add_argument('--ios', type=Path, required=True)
 ap.add_argument('--stage0', type=Path, required=True)
 ap.add_argument('--triangle', type=Path, required=True, help='Signed triangle_app executable')
 ap.add_argument('--output', type=Path, required=True, help='New directory on the same filesystem as iOS inputs')
+ap.add_argument('--fw', type=Path, help='audio DSP firmware directory (adsp.mdt, adsp.b00..): copied to /fw')
 args = ap.parse_args()
 root = args.output.resolve()
 if args.output.exists() or args.output.is_symlink():
@@ -84,4 +85,17 @@ for source in caches:
     if target.exists() or target.is_symlink():
         target.unlink()
     os.link(source, target)
+if args.fw is not None:
+    # The audio DSP's image belongs on this volume, not in the boot payload: 41 MB of firmware made the
+    # payload 67 MB, and the loader will not take that ("cannot load run-payload-adsp.bin"). The kernel
+    # looks in the small image first and then at /fw here (redwood_adsp.c: image_file).
+    dest = root / 'fw'
+    dest.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for item in sorted(args.fw.iterdir()):
+        if item.is_file() and item.name.startswith('adsp.'):
+            shutil.copy2(item, dest / item.name)
+            copied += 1
+    print(f'Staged {root}: {copied} files of the audio DSP at /fw')
+
 print(f'Staged {root}: normal Triangle bundle and {len(caches)} dyld cache parts; no device changed')
