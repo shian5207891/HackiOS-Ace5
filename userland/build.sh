@@ -593,9 +593,23 @@ done
 # ... and with ADSP=1 the image of the audio DSP, from the same place into ../fw-audio (bsd/dev/redwood_adsp.c):
 # adsp.mdt and adsp.b02 to adsp.b36, 20 MB. Only when asked for: beside GL=1 the payload would be more than the 64 MB
 # the loader takes.
+# The audio DSP's firmware is 41 MB of the vendor's code and is not in the tree file by file; it
+# rides along as one archive (fw-audio.zip, beside the source) and is unpacked here when asked for.
+if [ -n "$ADSP" ] && [ ! -f ../fw-audio/adsp.mdt ] && [ -f ../fw-audio.zip ]; then
+	rm -rf ../.fw-unpack ../fw-audio
+	mkdir -p ../.fw-unpack
+	( cd ../.fw-unpack && unzip -q -o ../fw-audio.zip ) 2>/dev/null
+	if [ -d ../.fw-unpack/fw ]; then
+		mv ../.fw-unpack/fw ../fw-audio
+		echo "build.sh: fw-audio.zip unpacked: $(ls ../fw-audio | wc -l) files, the audio DSP's image"
+	fi
+	rm -rf ../.fw-unpack
+fi
 if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
 	mkdir -p root/fw
-	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] root/fw/
+	# every segment the header names: b00 and b01 too (the first loadable one is b01 on this
+	# SoC), so the pattern is two digits from 00 up, not 02 up
+	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b[0-9][0-9] root/fw/
 fi
 # Firmware that is not there is otherwise silent at build time and speaks only much later, deep in a
 # device log -- "adreno: THE GPU IS NOT STARTED: the small image has no fw/a660_gmu.bin" cost a phone
