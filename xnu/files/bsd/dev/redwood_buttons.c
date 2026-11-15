@@ -452,7 +452,7 @@ pin_input(void)
 	/* a pull-up means the key pulls the pin low; a pull-down (or none) means it pulls it high */
 	if (mode != 0 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) || (!btn_pin_high && pull >= 4)) {
 		printf("buttons: volume down's pin is not an enabled input the way this phone wires it "
-		    "(mode %u, pull %u, btn_pin_high=%d): volume up is left alone\n", mode, pull, btn_pin_high);
+		    "(mode %u, pull %u, btn_pin_high=%d): volume down is left alone\n", mode, pull, btn_pin_high);
 		return;
 	}
 	volume_up.usable = true;
