@@ -1082,9 +1082,9 @@ load_tweaks(void)
  * activity appears in it, and it does not grow. island=0 in the kernel's boot arguments leaves it out;
  * island_width / island_height / island_top (in pixels) move it.
  */
-#define ISLAND_DEFAULT_WIDTH    378.0   /* 126 points at 3x: the 14 Pro's island */
-#define ISLAND_DEFAULT_HEIGHT   111.0   /* 37 points */
-#define ISLAND_DEFAULT_TOP      33.0    /* 11 points below the top edge */
+#define ISLAND_DEFAULT_WIDTH    312.0   /* 104 points: the 14 Pro's 126 on a narrower screen */
+#define ISLAND_DEFAULT_HEIGHT    90.0   /* 30 points */
+#define ISLAND_DEFAULT_TOP      30.0    /* 10 points */
 
 static id island_window;
 
@@ -1096,10 +1096,23 @@ island_tapped(id self, SEL _cmd, id recognizer)
 {
 	id manager = ((id (*)(id, SEL)) objc_msgSend)(objc_getClass("SBLockScreenManager"),
 	    sel_registerName("sharedInstanceIfExists"));
+	BOOL (*responds)(id, SEL, SEL) = (BOOL (*)(id, SEL, SEL)) objc_msgSend;
+
 	if (manager == nil) {
 		return;
 	}
-	((void (*)(id, SEL, BOOL)) objc_msgSend)(manager, sel_registerName("lockDeviceAnimated:"), YES);
+	/* iOS 16 does not answer to lockDeviceAnimated: (that selector took SpringBoard down with an
+	 * NSInvalidArgumentException and left the phone black); whatever this build does answer to is
+	 * asked for by name, and if none of them is there the tap does nothing rather than crash. */
+	if (responds(manager, sel_registerName("respondsToSelector:"), sel_registerName("lockDeviceAnimated:"))) {
+		((void (*)(id, SEL, BOOL)) objc_msgSend)(manager, sel_registerName("lockDeviceAnimated:"), YES);
+	} else if (responds(manager, sel_registerName("respondsToSelector:"), sel_registerName("lockDevice"))) {
+		((void (*)(id, SEL)) objc_msgSend)(manager, sel_registerName("lockDevice"));
+	} else if (responds(manager, sel_registerName("respondsToSelector:"), sel_registerName("_lockDeviceAnimated:"))) {
+		((void (*)(id, SEL, BOOL)) objc_msgSend)(manager, sel_registerName("_lockDeviceAnimated:"), YES);
+	} else {
+		say("redwood: island: SBLockScreenManager has no lock method this build answers to\n");
+	}
 }
 
 static double
