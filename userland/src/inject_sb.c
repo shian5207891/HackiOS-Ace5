@@ -1162,7 +1162,7 @@ island_install(void)
 	double height = boot_double("island_height", ISLAND_DEFAULT_HEIGHT);
 	double top = boot_double("island_top", ISLAND_DEFAULT_TOP);
 
-	id window = send_id(send_id(UIWindowClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), bounds);
+	id window = send_id_rect(send_id(UIWindowClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), bounds);
 	if (window == nil) {
 		say("redwood: island: no window\n");
 		return;
@@ -1183,7 +1183,7 @@ island_install(void)
 	}
 
 	redwood_rect pill = { (bounds.width - width) / 2.0, top, width, height };
-	id view = send_id(send_id(UIViewClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), pill);
+	id view = send_id_rect(send_id(UIViewClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), pill);
 	if (view == nil) {
 		say("redwood: island: no view\n");
 		return;
