@@ -4274,6 +4274,21 @@ redwood_wifi_init(void)
 		printf("wifi: wifi=%u is not understood: wifi=1 turns the radio on, wifi_step=N goes the first N steps of that\n", on);
 		return;
 	}
+	/* The Ace 5's radio is a WCN7850: a PCIe endpoint with BHI/MHI of its own, NOT the WPSS processor
+	 * this driver knows (whose firmware goes into host memory at 0x9ae00000 and is started through
+	 * TrustZone). Every address below is the POCO's; run on this phone it reads what is not there and
+	 * takes the kernel down before a line is logged. Until there is a driver for the new one, refuse:
+	 * wifi=1 then costs a boot, not a hang. wifi_force=1 overrides, for the port's own work. */
+	{
+		uint32_t force = 0;
+		if (!(PE_parse_boot_argn("wifi_force", &force, sizeof(force)) && force)) {
+			printf("wifi: this phone's radio is a WCN7850 (PCIe, BHI/MHI) and this driver is the POCO's WCN6750 "
+			    "(WPSS, firmware in host memory, started through TrustZone): nothing here applies. Refusing, so "
+			    "that wifi=1 cannot hang the boot. The port for the new radio is the work of weeks.\n");
+			return;
+		}
+		printf("wifi: wifi_force=1: running the POCO's driver against unknown hardware -- expect a hang\n");
+	}
 	if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
 		if (last_step != 0 && PE_parse_boot_argn("wifi_lx", &back, sizeof(back)) && back) {
 			/* a check of what is under the driver: it gets as far as finding no firmware to talk to */
