@@ -38,6 +38,10 @@ struct loader_battery {
 };
 
 static volatile struct loader_battery *shared_battery;
+/* Placeholder reading, boot-arg battery_fake=N: the Ace 5 has no path to the fuel gauge until the audio
+ * DSP's battery manager runs (bsd/dev/redwood_adsp.c), and this port's loader hands over no sample.
+ * With this set the power source reports a fixed percentage so the UI can be looked at; the log says so. */
+static int battery_fake_percent = -1;
 static int battery_soc_percent = -1, battery_voltage_mv = -1, battery_current_ma;
 static int battery_temperature_c = -273, battery_present, battery_charger_present;
 static int battery_charging, battery_soc_estimated, battery_charger_action = -1;
@@ -87,6 +91,8 @@ battery_snapshot(struct loader_battery *out)
 	return false;
 }
 
+void redwood_battery_report(const struct redwood_battery_state *b);   /* below, and to the IOKit side */
+
 static void
 battery_poll(void)
 {
@@ -96,6 +102,19 @@ battery_poll(void)
 	    sample.version != LOADER_BATTERY_VERSION || sample.size < sizeof(sample) ||
 	    !(sample.flags & LOADER_BATTERY_VALID) || sample.soc_percent < 0 || sample.soc_percent > 100) {
 		battery_failures++;
+		if (battery_fake_percent >= 0) {
+			struct redwood_battery_state st;
+
+			memset(&st, 0, sizeof(st));
+			st.percent_hundredths = battery_fake_percent * 100;
+			st.voltage_uv = 3900000;
+			st.temperature_hundredths = 2500;
+			st.present = 1;
+			st.status = 2;              /* POWER_SUPPLY_STATUS_DISCHARGING */
+			redwood_battery_report(&st);
+			battery_soc_estimated = 1;  /* after the report, which clears it */
+			battery_source_dsp = 0;
+		}
 		return;
 	}
 	battery_soc_percent = sample.soc_percent;
@@ -159,6 +178,14 @@ redwood_battery_report(const struct redwood_battery_state *b)
 static void
 battery_thread(__unused void *parameter, __unused wait_result_t result)
 {
+	{
+		uint32_t fake = 0;
+		if (PE_parse_boot_argn("battery_fake", &fake, sizeof(fake)) && fake <= 100) {
+			battery_fake_percent = (int)fake;
+			printf("battery: battery_fake=%u: reporting a FIXED %u%% (the fuel gauge is the audio DSP's, "
+			    "and it is not running)\n", fake, fake);
+		}
+	}
 	for (unsigned tick = 0;; tick++) {
 		battery_poll();
 		if (tick % 12 == 0) {
