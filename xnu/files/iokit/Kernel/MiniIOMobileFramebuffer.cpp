@@ -449,6 +449,10 @@ IOMobileFramebuffer::start(IOService * provider)
 	fColumn = IONewZero(uint32_t, fPanelWidth);
 	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
 	fDiff = gDiff != 0;
+	/* OSTypeAlloc does not hand back zeroed memory: a flag nobody sets is whatever was there, and a
+	 * stray "the panel is off" makes drawLayer return without drawing -- the screen goes black and
+	 * SpringBoard, seeing its surfaces never arrive, aborts (9 times in one session). */
+	fPanelOff = false;
 	fDiffLeft = fDiffTop = ~0u;
 	/* what the tunables came out as: fb_hz is a boot-arg tunable, and if the beat below stays 60 Hz the
 	 * question is whether it was read at all. */
