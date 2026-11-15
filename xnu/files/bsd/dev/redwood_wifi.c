@@ -4267,6 +4267,16 @@ redwood_wifi_init(void)
 	uint64_t size = 0;
 	thread_t thread;
 
+	/* wifi_pcie=N is its own switch, not a step of wifi=1: it is what the WCN7850's port starts with,
+	 * and it must run whether or not wifi=1 was asked for. */
+	{
+		uint32_t pstep = 0;
+		if (PE_parse_boot_argn("wifi_pcie", &pstep, sizeof(pstep)) && pstep) {
+			redwood_pcie_probe(pstep);
+			return;
+		}
+	}
+
 	PE_parse_boot_argn("wifi_step", &last_step, sizeof(last_step));
 	if (last_step == 0 && (!PE_parse_boot_argn("wifi", &on, sizeof(on)) || on == 0)) {
 		return;
@@ -4280,13 +4290,6 @@ redwood_wifi_init(void)
 	 * TrustZone). Every address below is the POCO's; run on this phone it reads what is not there and
 	 * takes the kernel down before a line is logged. Until there is a driver for the new one, refuse:
 	 * wifi=1 then costs a boot, not a hang. wifi_force=1 overrides, for the port's own work. */
-	{
-		uint32_t pstep = 0;
-		if (PE_parse_boot_argn("wifi_pcie", &pstep, sizeof(pstep)) && pstep) {
-			redwood_pcie_probe(pstep);
-			return;
-		}
-	}
 	{
 		uint32_t force = 0;
 		if (!(PE_parse_boot_argn("wifi_force", &force, sizeof(force)) && force)) {
