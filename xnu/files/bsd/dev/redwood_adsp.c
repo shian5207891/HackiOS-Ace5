@@ -3211,20 +3211,27 @@ redwood_adsp_init(void)
 	if (last_step == 0 && (!PE_parse_boot_argn("adsp", &on, sizeof(on)) || on != 1)) {
 		return;
 	}
-	/* The Ace 5's audio DSP is not the POCO's: its memory is at 0x9df00000 (86 MB, dt
-	 * adspslpi_region) against 0x86700000 (64 MB) here, its IPCC client and its SMP2P item numbers
-	 * differ, and nothing below has been re-derived for it yet. Run as it stands, the sequence
-	 * writes into what is not the DSP and takes the kernel down before a line is logged. Refuse
-	 * until there is a port: adsp=1 then costs a boot, not a hang. adsp_force=1 overrides. */
+	/* The Ace 5's audio DSP is not the POCO's, and the port is half done. Derived from its own device
+	 * tree and proved by the 19:38 run: the shared memory at 0x81d00000 (2 MB, smem_region@81d00000),
+	 * our partition of it at 0x81e9f000 (0x60000), the DSP's processor 2 in it, the mailbox at
+	 * 0x406000 with client 3, GLINK's descriptor item 478 and our queue 479. Not yet derived: what
+	 * the DSP answers to once it runs (GLINK queue 480, SMP2P item 443 -- it has not run), the
+	 * TrustZone id this SoC gives the ADSP, and its firmware's segments. Steps 1 and 2 only read; from
+	 * step 3 on the sequence writes into what may not be the DSP, so that still needs adsp_force=1. */
 	{
 		uint32_t force = 0;
-		if (!(PE_parse_boot_argn("adsp_force", &force, sizeof(force)) && force)) {
-			printf("adsp: this phone's audio DSP is not the one this file was written for (memory 0x9df00000/86 MB "
-			    "here, 0x86700000/64 MB there; different IPCC client and SMP2P items). Refusing, so that adsp=1 "
-			    "cannot hang the boot.\n");
+		if (last_step > 2 && !(PE_parse_boot_argn("adsp_force", &force, sizeof(force)) && force)) {
+			printf("adsp: steps 3 and up write into this phone's audio DSP with numbers re-derived only as far as step 2 "
+			    "(shared memory and mailbox known; what the DSP answers to, its TrustZone id and its firmware's "
+			    "segments not). Refusing, so that adsp=1 cannot hang the boot; adsp_force=1 overrides.\n");
 			return;
 		}
-		printf("adsp: adsp_force=1: running the POCO's sequence against unknown hardware -- expect a hang\n");
+		if (force) {
+			printf("adsp: adsp_force=1: running the whole sequence, steps 3 and up against hardware not yet derived for "
+			    "this phone -- expect a hang\n");
+		} else {
+			printf("adsp: steps 1 and 2 only: reading the shared memory, the mailbox and the firmware\n");
+		}
 	}
 	if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
 		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
