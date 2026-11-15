@@ -1088,6 +1088,20 @@ load_tweaks(void)
 
 static id island_window;
 
+/* A tap on the pill locks the phone, which is what a real island cannot do either -- there the tap opens
+ * the live activity. Ours has no activity to open, and locking is the one thing this phone can actually
+ * do from there: the same call the lock screen's own idle timer makes. */
+static void
+island_tapped(id self, SEL _cmd, id recognizer)
+{
+	id manager = ((id (*)(id, SEL)) objc_msgSend)(objc_getClass("SBLockScreenManager"),
+	    sel_registerName("sharedInstanceIfExists"));
+	if (manager == nil) {
+		return;
+	}
+	((void (*)(id, SEL, BOOL)) objc_msgSend)(manager, sel_registerName("lockDeviceAnimated:"), YES);
+}
+
 static double
 boot_double(const char *name, double fallback)
 {
@@ -1162,7 +1176,10 @@ island_install(void)
 	double height = boot_double("island_height", ISLAND_DEFAULT_HEIGHT);
 	double top = boot_double("island_top", ISLAND_DEFAULT_TOP);
 
-	id window = send_id_rect(send_id(UIWindowClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), bounds);
+	redwood_rect pill = { (bounds.width - width) / 2.0, top, width, height };
+	redwood_rect local = { 0, 0, width, height };
+	/* the window is only the pill, not the screen: a full-screen window would swallow every touch */
+	id window = send_id_rect(send_id(UIWindowClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), pill);
 	if (window == nil) {
 		say("redwood: island: no window\n");
 		return;
@@ -1182,8 +1199,7 @@ island_install(void)
 		}
 	}
 
-	redwood_rect pill = { (bounds.width - width) / 2.0, top, width, height };
-	id view = send_id_rect(send_id(UIViewClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), pill);
+	id view = send_id_rect(send_id(UIViewClass, sel_registerName("alloc")), sel_registerName("initWithFrame:"), local);
 	if (view == nil) {
 		say("redwood: island: no view\n");
 		return;
@@ -1197,11 +1213,28 @@ island_install(void)
 	}
 	send_void_id(window, sel_registerName("addSubview:"), view);
 	send_void_bool(window, sel_registerName("setHidden:"), NO);
-	/* it must never swallow a touch: everything under it is SpringBoard's */
-	send_void_bool(window, sel_registerName("setUserInteractionEnabled:"), NO);
+	send_void_bool(window, sel_registerName("setUserInteractionEnabled:"), YES);
+	send_void_bool(view, sel_registerName("setUserInteractionEnabled:"), YES);
+
+	/* a tap on the pill: lock the phone */
+	{
+		Class Target = objc_allocateClassPair(objc_getClass("NSObject"), "RedwoodIslandTarget", 0);
+		Class Recognizer = objc_getClass("UITapGestureRecognizer");
+		if (Target != Nil && Recognizer != Nil) {
+			class_addMethod(Target, sel_registerName("tapped:"), (IMP) island_tapped, "v@:@");
+			objc_registerClassPair(Target);
+			id target = send_id(send_id(Target, sel_registerName("alloc")), sel_registerName("init"));
+			id (*send_gr)(id, SEL, id, SEL) = (id (*)(id, SEL, id, SEL)) objc_msgSend;
+			id gesture = send_gr(send_id(Recognizer, sel_registerName("alloc")),
+			    sel_registerName("initWithTarget:action:"), target, sel_registerName("tapped:"));
+			if (gesture != nil) {
+				send_void_id(view, sel_registerName("addGestureRecognizer:"), gesture);
+			}
+		}
+	}
 
 	island_window = window;
-	say("redwood: island: %0.fx%0.f at y=%0.f painted over the status bar (decoration only)\n", width, height, top);
+	say("redwood: island: %0.fx%0.f at y=%0.f over the status bar; tap it to lock\n", width, height, top);
 }
 
 __attribute__((constructor))
