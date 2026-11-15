@@ -1047,14 +1047,13 @@ image_file(const char *name, uint64_t *size)
 			return data;
 		}
 	}
-	{
-		const uint8_t *data = root_file(name, size);
-
-		if (data != NULL) {
-			from_root = true;
-			return data;
-		}
-	}
+	/* The root-file-system fallback is gone: it was the only caller of root_file() in the kernel, and
+	 * on the phone it aborted in _rd -- a read of an address nothing maps -- the moment the DSP's
+	 * firmware was asked for at /fw (19:10 run: "Unclassified kernel abort ... far=0xfffffffbf90b8010").
+	 * The image is read through redwood_image_file() above instead, which reads the APFS container of
+	 * whichever RAM disk carries fw/ (md1 the payload, md0 the system image): the firmware for the
+	 * system image goes to fw/ of its volume, not to /fw of a mounted root. */
+	(void)from_root;
 	printf("adsp: %u: no fw/%s in the small image nor on the root: put the phone's /vendor/firmware_mnt/image/%s into "
 	    "fw-audio/ and run SYSTEM=1 userland/build.sh (or ADSP=1, for the small image)\n", step, name, name);
 	return NULL;
