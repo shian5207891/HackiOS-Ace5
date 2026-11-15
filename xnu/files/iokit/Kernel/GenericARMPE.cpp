@@ -399,6 +399,14 @@ GenericARMPE::getMachineName(char * name, int maxLength)
 	 * does not know it picks none at all -- Control Center, for one, then lays its modules out
 	 * without their sizes. (boot-arg machine_name=0: the plain "arm64" this used to be.)
 	 */
+	/* machine_model=iPhone15,2 says what device iOS should think this is, whatever the loader put
+	 * into the device tree. iOS derives the product type, the capabilities (ProMotion, the Dynamic
+	 * Island) and the names Settings shows from this one string -- and the loader's own value is
+	 * built inside it, not stored in the device tree, so it cannot be changed there. */
+	if (PE_parse_boot_argn("machine_model", name, maxLength) && name[0] != 0) {
+		printf("GenericARMPE: model %s (machine_model=)\n", name);
+		return true;
+	}
 	PE_parse_boot_argn("machine_name", &real, sizeof(real));
 	if (!real || !IODTPlatformExpert::getMachineName(name, maxLength) || name[0] == 0) {
 		strlcpy(name, "arm64", maxLength);
