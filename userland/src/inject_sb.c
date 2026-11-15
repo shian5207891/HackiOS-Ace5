@@ -1250,6 +1250,182 @@ island_install(void)
 	say("redwood: island: %0.fx%0.f at y=%0.f over the status bar; tap it to lock\n", width, height, top);
 }
 
+
+/* ---- a minimal symbol rebinder, and the two MobileGestalt answers -----------------------------------
+ *
+ * iOS decides whether this device has ProMotion (and the Dynamic Island) from MobileGestalt, whose
+ * answers are a table keyed by the product type -- and the product type is what the boot loader
+ * injects as hw.machine, which cannot be changed from the image (booting with machine_model=iPhone15,2
+ * took the kernel down before it printed its second line). The answers themselves can be changed here
+ * instead: SpringBoard imports MGGetBoolAnswer and MGGetFloat32Answer, and rebinding those two symbol
+ * pointers in its own __DATA is enough.
+ *
+ * The rebinder is the classic fishhook walk: the image's __DATA* segments, of which the sections named
+ * __got/__auth_got/__la_symbol_ptr/__nl_symbol_ptr hold one pointer per imported symbol; a pointer that
+ * lies inside __LINKEDIT is one of those, and the indirect symbol table says which symbol it is.
+ */
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+
+struct rebinding { const char *name; void *replacement; void **original; };
+
+static bool
+rebind_symbols_for_image(const struct mach_header *header, intptr_t slide, const struct rebinding *bindings,
+    unsigned count)
+{
+	const struct mach_header_64 *mh = (const struct mach_header_64 *) header;
+	const struct segment_command_64 *linkedit = NULL;
+	const struct symtab_command *symtab = NULL;
+	const struct dysymtab_command *dysymtab = NULL;
+	uintptr_t base = 0, end = 0;
+
+	if (header->magic != MH_MAGIC_64) {
+		return false;
+	}
+	for (uint32_t i = 0; i < mh->ncmds; i++) {
+		const struct load_command *lc = (const struct load_command *) ((uintptr_t) mh + sizeof(struct mach_header_64));
+		for (uint32_t j = 0; j < i; j++) {
+			lc = (const struct load_command *) ((uintptr_t) lc + lc->cmdsize);
+		}
+		if (lc->cmd == LC_SEGMENT_64) {
+			const struct segment_command_64 *seg = (const struct segment_command_64 *) lc;
+			if (strcmp(seg->segname, "__LINKEDIT") == 0) {
+				linkedit = seg;
+			}
+		} else if (lc->cmd == LC_SYMTAB) {
+			symtab = (const struct symtab_command *) lc;
+		} else if (lc->cmd == LC_DYSYMTAB) {
+			dysymtab = (const struct dysymtab_command *) lc;
+		}
+	}
+	if (linkedit == NULL || symtab == NULL || dysymtab == NULL) {
+		return false;
+	}
+	base = (uintptr_t) linkedit->vmaddr + (uintptr_t) slide - linkedit->fileoff;
+	end = base + linkedit->vmsize;
+
+	/* the second pass: the sections that hold the pointers */
+	const struct load_command *lc = (const struct load_command *) ((uintptr_t) mh + sizeof(struct mach_header_64));
+	for (uint32_t i = 0; i < mh->ncmds; i++, lc = (const struct load_command *) ((uintptr_t) lc + lc->cmdsize)) {
+		if (lc->cmd != LC_SEGMENT_64) {
+			continue;
+		}
+		const struct segment_command_64 *seg = (const struct segment_command_64 *) lc;
+		if (strncmp(seg->segname, "__DATA", 6) != 0) {
+			continue;
+		}
+		const struct section_64 *sect = (const struct section_64 *) ((uintptr_t) seg + sizeof(struct segment_command_64));
+		for (uint32_t k = 0; k < seg->nsects; k++, sect++) {
+			bool is_symbol_pointer = strcmp(sect->sectname, "__got") == 0 ||
+			    strcmp(sect->sectname, "__auth_got") == 0 ||
+			    strcmp(sect->sectname, "__la_symbol_ptr") == 0 ||
+			    strcmp(sect->sectname, "__nl_symbol_ptr") == 0;
+			if (!is_symbol_pointer) {
+				continue;
+			}
+			const uint32_t *indirect = (const uint32_t *) (base + dysymtab->indirectsymoff);
+			void **slots = (void **) (sect->addr + (uintptr_t) slide);
+			for (uint32_t s = 0; s < sect->size / sizeof(void *); s++) {
+				uint32_t index = indirect[sect->reserved1 + s];
+				if (index == INDIRECT_SYMBOL_LOCAL || index == INDIRECT_SYMBOL_ABS) {
+					continue;
+				}
+				const struct nlist_64 *symbols = (const struct nlist_64 *) (base + symtab->symoff);
+				const char *names = (const char *) (base + symtab->stroff);
+				const char *name = names + symbols[index].n_un.n_strx;
+				for (unsigned b = 0; b < count; b++) {
+					if (strcmp(name + 1, bindings[b].name) != 0) {
+						continue;
+					}
+					if (bindings[b].original != NULL && *bindings[b].original == NULL) {
+						*bindings[b].original = slots[s];
+					}
+					slots[s] = bindings[b].replacement;
+				}
+			}
+		}
+	}
+	return true;
+}
+
+/* the two answers that matter. A key that says yes to ProMotion and to the island is what SpringBoard
+ * asks for; the names are matched loosely because the exact strings differ between iOS releases. */
+static BOOL (*original_mg_bool)(CFStringRef);
+static float (*original_mg_float)(CFStringRef);
+
+static bool
+key_mentions(CFStringRef key, const char *needle)
+{
+	char buffer[256] = "";
+
+	if (key == NULL || CFStringGetCString(key, buffer, sizeof(buffer), kCFStringEncodingUTF8) == 0) {
+		return false;
+	}
+	for (char *at = buffer; *at != 0; at++) {
+		if (strncasecmp(at, needle, strlen(needle)) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static BOOL
+redwood_mg_bool(CFStringRef key)
+{
+	if (key_mentions(key, "promotion") || key_mentions(key, "island") ||
+	    key_mentions(key, "high-refresh") || key_mentions(key, "120")) {
+		char buffer[256] = "?";
+		CFStringGetCString(key, buffer, sizeof(buffer), kCFStringEncodingUTF8);
+		say("redwood: MobileGestalt %s -> YES\n", buffer);
+		return YES;
+	}
+	return original_mg_bool != NULL ? original_mg_bool(key) : NO;
+}
+
+static float
+redwood_mg_float(CFStringRef key)
+{
+	if (key_mentions(key, "refresh-rate") || key_mentions(key, "maximum-frames") ||
+	    key_mentions(key, "promotion")) {
+		char buffer[256] = "?";
+		CFStringGetCString(key, buffer, sizeof(buffer), kCFStringEncodingUTF8);
+		say("redwood: MobileGestalt %s -> 120\n", buffer);
+		return 120.0f;
+	}
+	return original_mg_float != NULL ? original_mg_float(key) : 60.0f;
+}
+
+static void
+install_gestalt_hooks(void)
+{
+	void *mg = dlopen("/System/Library/PrivateFrameworks/MobileGestalt.framework/MobileGestalt", RTLD_NOW);
+	struct rebinding bindings[2];
+	unsigned count = 0;
+
+	if (mg == NULL) {
+		say("redwood: no MobileGestalt to hook\n");
+		return;
+	}
+	bindings[count].name = "MGGetBoolAnswer";
+	bindings[count].replacement = (void *) redwood_mg_bool;
+	bindings[count].original = (void **) &original_mg_bool;
+	count++;
+	bindings[count].name = "MGGetFloat32Answer";
+	bindings[count].replacement = (void *) redwood_mg_float;
+	bindings[count].original = (void **) &original_mg_float;
+	count++;
+	/* the image that matters is SpringBoard itself, image 0; a few others ask as well */
+	for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+		rebind_symbols_for_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i), bindings, count);
+	}
+	if (original_mg_bool != NULL) {
+		say("redwood: MobileGestalt hooked (bool %p, float %p)\n", (void *) original_mg_bool, (void *) original_mg_float);
+	} else {
+		say("redwood: MobileGestalt found, but no caller to rebind\n");
+	}
+}
+
 __attribute__((constructor))
 static void
 redwood_springboard_init(void)
@@ -1423,6 +1599,10 @@ redwood_springboard_init(void)
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 		unlock();
 	});
+	/* before anything asks: SpringBoard's own idea of the display is settled in its first seconds */
+	if (!boot_flag("no_gestalt_hook")) {
+		install_gestalt_hooks();
+	}
 	if (!boot_flag("island")) {
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 12 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 			island_install();
