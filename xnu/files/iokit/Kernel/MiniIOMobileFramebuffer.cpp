@@ -756,7 +756,11 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
 	if (px1 <= px0 || py1 <= py0) {
 		return;
 	}
-	if (gGPUDisplay) {
+	/* One to one (the picture is already the panel's size): the GPU's display blit scales, and at a
+	 * factor of exactly 1 it produced garbage -- iOS flagged it with its red status bar (rdar:45025538).
+	 * The row copier below has an unscaled path of its own, so leave this case to it. */
+	bool one_to_one = (px1 - px0 == sw && py1 - py0 == sh);
+	if (gGPUDisplay && !one_to_one) {
 		int32_t source[4] = {sx, sy, sw, sh};
 		int32_t destination[4] = {px0, py0, px1-px0, py1-py0};
 		static uint32_t hardware, fallback;
