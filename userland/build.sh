@@ -648,7 +648,10 @@ done
 [ -d root/lib/RedwoodAudio.driver ] && ln -s /redwood/lib/RedwoodAudio.driver root/hal/RedwoodAudio.driver
 # the image: zlib where it saves room (a small file whole in its attribute, as Apple keeps them); fw/
 # as it is, which the kernel's drivers use where it lies in memory (bsd/dev/redwood_image.c)
-python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
+# fw/ is stored compressed now, not "--plain": the audio DSP's image is 41 MB and a payload with it
+	# stored as it lies would not load (fastboot: "cannot load", at 67 MB). redwood_image.c reads a
+	# compressed file out once through apfs_lib, which is what the drivers do anyway.
+	python3 ../tools/apfs/mkapfs.py -z -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root
 
 # --- the RAM part of a boot off the flash: FLASHBOOT=1 -> flashboot.apfs --------------------------------
