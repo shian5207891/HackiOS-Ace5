@@ -3202,6 +3202,21 @@ redwood_adsp_init(void)
 	if (last_step == 0 && (!PE_parse_boot_argn("adsp", &on, sizeof(on)) || on != 1)) {
 		return;
 	}
+	/* The Ace 5's audio DSP is not the POCO's: its memory is at 0x9df00000 (86 MB, dt
+	 * adspslpi_region) against 0x86700000 (64 MB) here, its IPCC client and its SMP2P item numbers
+	 * differ, and nothing below has been re-derived for it yet. Run as it stands, the sequence
+	 * writes into what is not the DSP and takes the kernel down before a line is logged. Refuse
+	 * until there is a port: adsp=1 then costs a boot, not a hang. adsp_force=1 overrides. */
+	{
+		uint32_t force = 0;
+		if (!(PE_parse_boot_argn("adsp_force", &force, sizeof(force)) && force)) {
+			printf("adsp: this phone's audio DSP is not the one this file was written for (memory 0x9df00000/86 MB "
+			    "here, 0x86700000/64 MB there; different IPCC client and SMP2P items). Refusing, so that adsp=1 "
+			    "cannot hang the boot.\n");
+			return;
+		}
+		printf("adsp: adsp_force=1: running the POCO's sequence against unknown hardware -- expect a hang\n");
+	}
 	if (pe_arm_get_soc_base_phys() != REDWOOD_SOC_BASE) {
 		printf("adsp: adsp=1 and adsp_step=N are for the phone's audio DSP, and this is not the phone\n");
 		return;
