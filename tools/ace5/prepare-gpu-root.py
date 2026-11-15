@@ -60,6 +60,12 @@ if args.wallpaper:
     # Its program is in the system image (ChronoCore.framework/Support/chronod), so only the job
     # has to be here.
     labels.append('com.apple.chronod')
+    # Services whose absence makes applications hang or quit: SpringBoard's own log was full of
+    # failed lookups for these (tccd alone 310 times a session -- every privacy question an
+    # application asks goes unanswered and it waits), and a missing AudioSession is why the
+    # ringtones page draws nothing. Their programs are in the system image; only the jobs are here.
+    labels += ['com.apple.tccd', 'com.apple.tccd.system', 'com.apple.fontservicesd',
+               'com.apple.splashboardd']
     # Predecoded PNG layers preserve the stock CAML animation without starting
     # mediaserverd and its audio/watch dependencies just to decode wallpaper.
     labels.append('com.apple.PosterBoard')
