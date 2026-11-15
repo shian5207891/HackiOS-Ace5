@@ -309,7 +309,23 @@ for label in labels:
 
 if rest:
     count = 0
-    rest_jobs = [(src, name) for name in sorted(os.listdir(src))]
+
+    def job_dirs():
+        """Everywhere a job's .plist can be. iOS 16 keeps most of them in the OS cryptex, which
+        fetch.sh unpacks beside the root filesystem -- not in the root filesystem itself, where
+        System/Library/LaunchDaemons is empty. Missing that directory is why --rest found nothing
+        and SpringBoard asked for services nobody had (chronod among them)."""
+        out = []
+        for d in (src, f'{src_root}/../cryptex/System/Library/LaunchDaemons',
+                  f'{src_root}/../cryptex-app/System/Library/LaunchDaemons'):
+            if os.path.isdir(d):
+                out.append(d)
+        return out
+
+    rest_jobs = []
+    for d in job_dirs():
+        print(f'mkjobs: --rest reading jobs from {d}')
+        rest_jobs += [(d, name) for name in sorted(os.listdir(d))]
     if os.path.isdir(angels):
         rest_jobs += [(angels, name) for name in sorted(os.listdir(angels))]
     for directory, name in rest_jobs:
