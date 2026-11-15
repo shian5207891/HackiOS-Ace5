@@ -227,6 +227,12 @@ DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'loca
 # ALLOW="word ..." in the environment lets jobs through that DENY would stop: for trying one out
 DENY = tuple(word for word in DENY if word not in os.environ.get('ALLOW', '').split())
 
+# FORCE="label ..." adds those jobs even when the two checks below would drop them (the program not
+# among the files extracted beside the image, or a job with no MachServices): the widgets' chronod is
+# such a job -- its program lives in the image but was not taken into rootfs, so --rest skipped it and
+# SpringBoard asked for a service nobody had.
+FORCE = tuple(word for word in os.environ.get('FORCE', '').split())
+
 args = sys.argv[1:]
 rest = '--rest' in args
 root_volume = None              # the listing of the whole iOS volume, when that volume is the root
@@ -308,12 +314,17 @@ if rest:
         rest_jobs += [(angels, name) for name in sorted(os.listdir(angels))]
     for directory, name in rest_jobs:
         label = name[:-len('.plist')]
-        if not name.endswith('.plist') or label in labels or any(word in label for word in DENY):
+        if not name.endswith('.plist') or label in labels:
+            continue
+        if label not in FORCE and any(word in label for word in DENY):
             continue
         with open(f'{directory}/{name}', 'rb') as f:
             job = plistlib.load(f)
         program = job.get('Program') or (job.get('ProgramArguments') or [''])[0]
-        if not job.get('MachServices') or not present(program):
+        forced = label in FORCE
+        if forced:
+            print(f'mkjobs: {label} forced in (program {program})')
+        if not forced and (not job.get('MachServices') or not present(program)):
             continue
         for key in ('RunAtLoad', 'KeepAlive', 'StartInterval', 'StartCalendarInterval', 'WatchPaths',
                     'QueueDirectories', 'StartOnMount', 'LaunchEvents'):
