@@ -55,6 +55,11 @@ if args.compositor_threading:
     required.append(args.base / 'LaunchDaemons/com.apple.backboardd.plist')
 labels = ['com.apple.sleepd', 'com.apple.configd']
 if args.wallpaper:
+    # The widgets' service: SpringBoard asks launchd for com.apple.chronoservices and, without a
+    # job for it, the widgets stay empty ("Could not find job with label com.apple.chronod").
+    # Its program is in the system image (ChronoCore.framework/Support/chronod), so only the job
+    # has to be here.
+    labels.append('com.apple.chronod')
     # Predecoded PNG layers preserve the stock CAML animation without starting
     # mediaserverd and its audio/watch dependencies just to decode wallpaper.
     labels.append('com.apple.PosterBoard')
@@ -62,9 +67,17 @@ if args.wallpaper:
 for label in labels:
     folder = 'LaunchAngels' if label == 'com.apple.PosterBoard' else 'LaunchDaemons'
     required.append(args.ios_root / 'System/Library' / folder / (label + '.plist'))
-for path in required:
-    if not path.is_file():
-        ap.error(f'missing input: {path}')
+missing = [p for p in required if not p.is_file()]
+for path in missing:
+    print(f'prepare-gpu-root: missing input, skipping: {path}')
+# a missing job plist must not fail the build: drop its label instead
+if missing:
+    def _label_of(path):
+        return path.name[:-len('.plist')]
+    gone = {_label_of(p) for p in missing}
+    labels = [l for l in labels if l not in gone]
+    if not labels:
+        ap.error('no launchd job left to add')
 shutil.copytree(args.base, args.output, symlinks=True)
 for src, dst in copies:
     target = args.output / dst
