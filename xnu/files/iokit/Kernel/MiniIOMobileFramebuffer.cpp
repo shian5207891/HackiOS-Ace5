@@ -1416,14 +1416,15 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		 * driver, the boot loader's picture stays on -- so the picture is painted black instead,
 		 * which on AMOLED is the same thing for the eye and for the battery. */
 		bool off = args->scalarInputCount > 0 && in[0] == 0;
+		IOMobileFramebuffer * fb = fOwner;
 
-		IOLockLock(fLock);
-		if (off != fPanelOff) {
-			fPanelOff = off;
-			if (off && fBase != NULL) {
-				for (uint32_t y = 0; y < fPanelHeight; y++) {
-					uint32_t * row = (uint32_t *) (fBase + (size_t) y * fRowBytes);
-					for (uint32_t x = 0; x < fPanelWidth; x++) {
+		IOLockLock(fb->fLock);
+		if (off != fb->fPanelOff) {
+			fb->fPanelOff = off;
+			if (off && fb->fBase != NULL) {
+				for (uint32_t y = 0; y < fb->fPanelHeight; y++) {
+					uint32_t * row = (uint32_t *) (fb->fBase + (size_t) y * fb->fRowBytes);
+					for (uint32_t x = 0; x < fb->fPanelWidth; x++) {
 						row[x] = 0;
 					}
 				}
@@ -1431,7 +1432,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 			IOLog("MiniIOMobileFramebuffer: display %s (RequestPowerChange %d)\n", off ? "off" : "on",
 			    args->scalarInputCount > 0 ? (int) in[0] : -1);
 		}
-		IOLockUnlock(fLock);
+		IOLockUnlock(fb->fLock);
 		return kIOReturnSuccess;
 	}
 
