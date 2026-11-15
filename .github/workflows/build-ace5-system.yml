@@ -85,7 +85,7 @@ jobs:
 
       - name: 编译 userland（中文 + REST=1 全部服务 + RWA_PACKED16）
         run: |
-          GL=1 PREBUILT= REST=1 RWA_PACKED16=1 ADSP=1 FORCE="com.apple.chronod" bash userland/build.sh
+          GL=1 PREBUILT= REST=1 RWA_PACKED16=1 FORCE="com.apple.chronod" bash userland/build.sh
 
       - name: 编译 GPU userland（Metal）
         run: tools/ace5/build-gpu-userland.sh local/components --metal
@@ -103,10 +103,17 @@ jobs:
 
       - name: 组装系统目录（无壁纸版，跳过 macOS sips）
         run: |
+          rm -rf local/fw-audio && mkdir -p local/fw-unpack
+          if [ -f fw-audio.zip ]; then
+            ( cd local/fw-unpack && unzip -q -o ../../fw-audio.zip )
+            mv local/fw-unpack/fw local/fw-audio
+            echo "固件文件数: $(ls local/fw-audio | wc -l)"
+          fi
           python3 tools/ace5/prepare-gpu-system.py \
             --ios ios165 \
             --stage0 userland/obj/stage0 \
             --triangle local/components/triangle_app \
+            --fw local/fw-audio \
             --output local/system-metal
 
       - name: 壁纸转换（Linux 路径：Pillow + pillow-heif，不需要 macOS sips）
