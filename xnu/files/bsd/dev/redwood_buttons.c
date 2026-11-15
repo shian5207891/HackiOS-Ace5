@@ -121,6 +121,9 @@ static uint32_t pon_id_override = 0x013, pin_id_override = 0x18d;
  *   obs     obsrvr + 0x8000*ee + 0x20*apid  (version 5: 0x10000*ee + 0x80*channel)
  * Linux drivers/spmi/spmi-pmic-arb.c, pmic_arb_offset_v7 / _pmic_arb_init_apid_v7. */
 static int arb_v7;
+/* The volume-up pin's polarity: the POCO's key pulls the pin low against a pull-up, SM8650's pulls it
+ * high against a pull-down. Boot-arg btn_pin_high=1 says which one this phone is. */
+static int btn_pin_high;
 
 #define OBSERVER_COMMAND        0x00
 #define OBSERVER_STATUS         0x08
@@ -360,7 +363,7 @@ buttons_poll(void)
 	if (volume_up.usable) {
 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
 		if (problem == NULL) {
-			button_look(&volume_up, !(status & GPIO_LEVEL));
+			button_look(&volume_up, btn_pin_high ? (status & GPIO_LEVEL) : !(status & GPIO_LEVEL));
 		} else if (said < 8) {
 			said++;
 			printf("buttons: reading %s: %s\n", pin.name, problem);
@@ -441,14 +444,16 @@ pin_input(void)
 	    "%02x %02x; level %s\n", mode, mode == 0 ? "input" : mode == 1 ? "output" : mode == 2 ? "input and output" : "analog",
 	    c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7, pull, pull < 4 ? "up" : pull == 4 ? "down" : "none",
 	    (c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) ? "enabled" : "DISABLED", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
-	    (status & GPIO_LEVEL) ? "high (released)" : "LOW (held)");
-	if (mode != 0 || pull >= 4 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80)) {
-		printf("buttons: volume up's pin is not an enabled input with a pull-up. Making it one is a write to the PMIC, "
-		    "which this driver does not do: volume up is left alone\n");
+	    (status & GPIO_LEVEL) ? (btn_pin_high ? "high (held)" : "high (released)")
+	                          : (btn_pin_high ? "LOW (released)" : "LOW (held)"));
+	/* a pull-up means the key pulls the pin low; a pull-down (or none) means it pulls it high */
+	if (mode != 0 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) || (!btn_pin_high && pull >= 4)) {
+		printf("buttons: volume up's pin is not an enabled input the way this phone wires it "
+		    "(mode %u, pull %u, btn_pin_high=%d): volume up is left alone\n", mode, pull, btn_pin_high);
 		return;
 	}
 	volume_up.usable = true;
-	volume_up.last = !(status & GPIO_LEVEL);
+	volume_up.last = btn_pin_high ? (status & GPIO_LEVEL) : !(status & GPIO_LEVEL);
 }
 
 static void
@@ -472,6 +477,12 @@ buttons_thread(void *parameter, __unused wait_result_t result)
 	PE_parse_boot_argn("spmi_obsrvr", &arb_observer_phys, sizeof(arb_observer_phys));
 	PE_parse_boot_argn("btn_pon_id", &pon_id_override, sizeof(pon_id_override));
 	PE_parse_boot_argn("btn_pin_id", &pin_id_override, sizeof(pin_id_override));
+	{
+		uint32_t high = 0;
+		if (PE_parse_boot_argn("btn_pin_high", &high, sizeof(high)) && high) {
+			btn_pin_high = 1;
+		}
+	}
 	pon.id = (uint16_t)pon_id_override;
 	pin.id = (uint16_t)pin_id_override;
 	printf("buttons: step 1: map the PMIC arbiter (%#x, %#x, %#x) and read its version\n",
