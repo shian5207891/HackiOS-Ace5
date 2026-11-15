@@ -286,7 +286,12 @@ put(struct block *b, const char *name, uint32_t offset, uint32_t value)
 
 /* ---- the shared memory (redwood_wifi.c, step 1) --------------------------------------------------- */
 
-#define SMEM_PHYS               0x80900000UL
+/* The Ace 5's numbers, read out of its own device tree (smp2p-adsp, glink-edge, reserved-memory):
+ *   smem_region@81d00000            2 MB
+ *   adspslpi_region@9df00000        0x5280000 = 86.5 MB
+ *   mboxes = <&ipcc 0x42 3 0> (glink) and <&ipcc 0x42 3 2> (smp2p): the same signals as the POCO,
+ *   but IPCC client 0x42 (66), not 3; the DSP is still processor 2 in the shared memory. */
+#define SMEM_PHYS               0x81d00000UL
 #define SMEM_SIZE               0x00200000u
 #define SMEM_US                 0
 #define SMEM_ADSP               2               /* dt: qcom,remote-pid of qcom,smp2p-adsp and qcom,glink/adsp */
@@ -610,7 +615,7 @@ static struct block aoss = { "mailbox", 0x0c300000, 0x400 };
 #define IPCC_CLEAR              0x1c
 #define IPCC_NOBODY             0xffffffffu
 #define IPCC_AOP                0u
-#define IPCC_LPASS              3u              /* dt: mboxes of qcom,smp2p-adsp and qcom,glink/adsp */
+#define IPCC_LPASS              66u             /* dt: <&ipcc 0x42 ...> of smp2p-adsp and glink-edge */
 #define IPCC_GLINK              0u
 #define IPCC_SMP2P              2u
 
@@ -961,8 +966,8 @@ step_survey(void)
 
 /* ---- step 2: the firmware -------------------------------------------------------------------------- */
 
-#define ADSP_MEMORY             0x86700000u     /* dt: reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000 */
-#define ADSP_MEMORY_SIZE        0x04000000u
+#define ADSP_MEMORY             0x9df00000u     /* dt: reserved-memory adspslpi_region@9df00000 */
+#define ADSP_MEMORY_SIZE        0x05280000u     /* 86.5 MB, the adspslpi region */
 #define PAS_ADSP                1               /* dt: qcom,pas-id */
 
 
