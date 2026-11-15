@@ -4140,6 +4140,7 @@ redwood_wifi_quiesce(void)
 }
 
 static void redwood_pcie_probe(uint32_t step);
+static void redwood_pcie_thread(void *parameter, wait_result_t result);
 #define REDWOOD_SOC_BASE        0x00400000ul    /* where the loader says the phone's peripherals begin (its "redwood") */
 
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
@@ -4272,7 +4273,15 @@ redwood_wifi_init(void)
 	{
 		uint32_t pstep = 0;
 		if (PE_parse_boot_argn("wifi_pcie", &pstep, sizeof(pstep)) && pstep) {
-			redwood_pcie_probe(pstep);
+			thread_t probe_thread;
+
+			pcie_probe_step = pstep;
+			if (kernel_thread_start(redwood_pcie_thread, NULL, &probe_thread) == KERN_SUCCESS) {
+				thread_deallocate(probe_thread);
+				printf("wifi: PCIe probe scheduled 20 s after start (step %u)\n", pstep);
+			} else {
+				printf("wifi: PCIe probe: no thread\n");
+			}
 			return;
 		}
 	}
@@ -4455,6 +4464,20 @@ static const struct { uint32_t off; const char *name; } pcie_clocks[] = {
 	{ 0x6b020UL, "slv_axi" }, { 0x6b02cUL, "mstr_axi" }, { 0x6b038UL, "cfg_ahb" },
 	{ 0x6b048UL, "pipe"    }, { 0x6b054UL, "phy_rchng"}, { 0x10058UL, "cnoc_sf_axi" },
 };
+
+/* The probe runs from a thread of its own, twenty seconds after the system is up: every write in it
+ * can hang the bus (a register touched with its clock off is an abort), and started where it used to be
+ * -- at the Wi-Fi driver's own start, before SpringBoard exists -- a hang there is a black screen and
+ * no log at all. From here the system is up first, the log has been written, and the last line says
+ * which write did it. */
+static uint32_t pcie_probe_step;
+
+static void
+redwood_pcie_thread(void *parameter, __unused wait_result_t result)
+{
+	delay_for_interval(20, NSEC_PER_SEC);
+	redwood_pcie_probe(pcie_probe_step);
+}
 
 static void
 redwood_pcie_probe(uint32_t step)
