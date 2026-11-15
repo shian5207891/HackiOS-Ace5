@@ -5,7 +5,10 @@
  *
  * None of the three is a pin of the SoC. They are inputs of two of the power management chips:
  *   power        KPDPWR_N of the power-on block ("PON") of the PMK8350
- *   volume down  RESIN_N of the same block
+ *                (SM8650/Ace 5: RESIN is VOLUME UP and PM8550 GPIO6 is VOLUME DOWN, the other way
+ *                 round from the POCO this file came from -- read out of Android's own input devices:
+ *                 pmic_resin -> KEY_VOLUMEUP, gpio-keys -> KEY_VOLUMEDOWN)
+ *   volume up    RESIN_N of the same block
  *   volume up    GPIO6 of the PM7325, pulled up; the key pulls it low
  * Both chips sit on the SPMI bus (slaves 0 and 1), and the way to that bus is the SoC's "PMIC
  * arbiter": it owns the bus and gives each of the systems on the chip (this one, the modem, the
@@ -354,7 +357,7 @@ buttons_poll(void)
 		problem = spmi_read(&pon, REG_RT_STATUS, &status, 1);
 		if (problem == NULL) {
 			button_look(&power, status & PON_KPDPWR);
-			button_look(&volume_down, status & PON_RESIN);
+			button_look(&volume_up, status & PON_RESIN);
 		} else if (said < 8) {
 			said++;
 			printf("buttons: reading %s: %s\n", pon.name, problem);
@@ -363,7 +366,7 @@ buttons_poll(void)
 	if (volume_up.usable) {
 		problem = spmi_read(&pin, REG_RT_STATUS, &status, 1);
 		if (problem == NULL) {
-			button_look(&volume_up, btn_pin_high ? (status & GPIO_LEVEL) : !(status & GPIO_LEVEL));
+			button_look(&volume_down, btn_pin_high ? (status & GPIO_LEVEL) : !(status & GPIO_LEVEL));
 		} else if (said < 8) {
 			said++;
 			printf("buttons: reading %s: %s\n", pin.name, problem);
@@ -440,7 +443,7 @@ pin_input(void)
 	}
 	mode = c[0] & 3;
 	pull = c[GPIO_REG_PULL - GPIO_REG_MODE] & 7;
-	printf("buttons: volume up's pin: mode %u (%s), supply %u, pull %u (%s), %s; registers 0x40.. = %02x %02x %02x %02x %02x %02x "
+	printf("buttons: volume down's pin: mode %u (%s), supply %u, pull %u (%s), %s; registers 0x40.. = %02x %02x %02x %02x %02x %02x "
 	    "%02x %02x; level %s\n", mode, mode == 0 ? "input" : mode == 1 ? "output" : mode == 2 ? "input and output" : "analog",
 	    c[GPIO_REG_SUPPLY - GPIO_REG_MODE] & 7, pull, pull < 4 ? "up" : pull == 4 ? "down" : "none",
 	    (c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) ? "enabled" : "DISABLED", c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
@@ -448,7 +451,7 @@ pin_input(void)
 	                          : (btn_pin_high ? "LOW (released)" : "LOW (held)"));
 	/* a pull-up means the key pulls the pin low; a pull-down (or none) means it pulls it high */
 	if (mode != 0 || !(c[GPIO_REG_ENABLE - GPIO_REG_MODE] & 0x80) || (!btn_pin_high && pull >= 4)) {
-		printf("buttons: volume up's pin is not an enabled input the way this phone wires it "
+		printf("buttons: volume down's pin is not an enabled input the way this phone wires it "
 		    "(mode %u, pull %u, btn_pin_high=%d): volume up is left alone\n", mode, pull, btn_pin_high);
 		return;
 	}
