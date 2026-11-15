@@ -610,6 +610,10 @@ if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
 	# every segment the header names: b00 and b01 too (the first loadable one is b01 on this
 	# SoC), so the pattern is two digits from 00 up, not 02 up
 	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b[0-9][0-9] root/fw/
+	# the directory only existed for this: prepare-gpu-system.py refuses to run while optional
+	# system content sits beside the source ("use userland/build.sh to include it"), and these
+	# 41 MB are now in root/fw where they belong
+	[ -f ../fw-audio.zip ] && rm -rf ../fw-audio
 fi
 # Firmware that is not there is otherwise silent at build time and speaks only much later, deep in a
 # device log -- "adreno: THE GPU IS NOT STARTED: the small image has no fw/a660_gmu.bin" cost a phone
