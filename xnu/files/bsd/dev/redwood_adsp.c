@@ -615,11 +615,16 @@ static struct block aoss = { "mailbox", 0x0c300000, 0x400 };
 #define IPCC_CLEAR              0x1c
 #define IPCC_NOBODY             0xffffffffu
 #define IPCC_AOP                0u
-#define IPCC_LPASS              66u             /* dt: <&ipcc 0x42 ...> of smp2p-adsp and glink-edge */
+/* The number in mboxes = <&ipcc 3 2> is the mailbox's phandle, then the client and the signal:
+ * the phandle of /soc/qcom,ipcc@406000 is 0x42, and the client the audio DSP's channels use is 3
+ * (LPASS), with signal 2 for SMP2P and 0 for GLINK. 0x42 taken for the client would have written 66
+ * into the target field of every IPCC_SEND, and the mailbox is at 0x406000, not 0x408000: the 19:38
+ * run read 0x408010, off the end of the block, and the abort followed. */
+#define IPCC_LPASS              3u              /* dt: <&ipcc 3 ...> of smp2p-adsp and glink-edge */
 #define IPCC_GLINK              0u
 #define IPCC_SMP2P              2u
 
-static struct block ipcc = { "ipcc", 0x00408000, 0x1000 };
+static struct block ipcc = { "ipcc", 0x00406000, 0x1000 };      /* dt: /soc/qcom,ipcc@406000 */
 
 static struct {
 	uint32_t glink, smp2p, said;
