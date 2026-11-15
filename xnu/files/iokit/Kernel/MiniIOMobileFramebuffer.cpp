@@ -760,6 +760,18 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
 	 * factor of exactly 1 it produced garbage -- iOS flagged it with its red status bar (rdar:45025538).
 	 * The row copier below has an unscaled path of its own, so leave this case to it. */
 	bool one_to_one = (px1 - px0 == sw && py1 - py0 == sh);
+	{
+		/* says which way a layer went, and with what geometry: one run answers what would otherwise
+		 * take a build and a guess each (the picture is 1264x2780 on this panel, iOS draws 1125x2436). */
+		static uint32_t logged;
+		if (logged < 12) {
+			logged++;
+			IOLog("fb: layer sid %u src %d,%d %dx%d -> panel %d,%d %dx%d (panel %ux%u, picture %ux%u, "
+			    "one_to_one %d, filter %d, threads %u)\n", s->sid, sx, sy, sw, sh, px0, py0, px1 - px0,
+			    py1 - py0, fPanelWidth, fPanelHeight, fWidth, fHeight, one_to_one ? 1 : 0, filter ? 1 : 0,
+			    fThreads);
+		}
+	}
 	if (gGPUDisplay && !one_to_one) {
 		int32_t source[4] = {sx, sy, sw, sh};
 		int32_t destination[4] = {px0, py0, px1-px0, py1-py0};
