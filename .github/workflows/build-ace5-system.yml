@@ -130,6 +130,7 @@ jobs:
             --stage0 userland/obj/stage0 \
             --triangle local/components/triangle_app \
             --fw local/fw-audio \
+            --jb jb/root/var/jb \
             --output local/system-metal
 
       - name: 壁纸转换（Linux 路径：Pillow + pillow-heif，不需要 macOS sips）
