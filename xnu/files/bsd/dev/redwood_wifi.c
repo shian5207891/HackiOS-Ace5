@@ -822,11 +822,17 @@ static struct block aoss = { "mailbox", 0x0c300000, 0x400 };
 #define QMP_MESSAGE             64              /* what Linux sends, whatever the text's length */
 
 /*
- * dt: qcom,ipcc@408000 (its interrupt: SPI 229). A doorbell is a processor ("client") and one
- * of its signals; clients: the always-on processor 0, the Wi-Fi DSP 24; signals: 0 the mailbox
- * or GLINK, 2 SMP2P (dt: the mboxes of power-controller@c300000, qcom,smp2p-wpss, glink wpss).
+ * dt: /soc/qcom,ipcc@406000 on the Ace 5 (its interrupt: SPI 229); the addresses below are the
+ * mailbox's. A doorbell is a processor ("client") and one of its signals; clients: the always-on
+ * processor 0, the Wi-Fi DSP 24; signals: 0 the mailbox or GLINK, 2 SMP2P (dt: the mboxes of
+ * power-controller@c300000, qcom,smp2p-wpss, glink wpss).
+ *
+ * Neither WPSS nor a Wi-Fi DSP exists on this phone: it has no qcom,smp2p-wpss and no glink wpss
+ * node, and its Wi-Fi is qcom,cnss-kiwi@b0000000 on PCIe 0x1c00000, so step 2's doorbell read
+ * belongs to the other machine this driver was written on; the block was also mapped a page past
+ * the mailbox at 0x408000, where a read is an abort. Corrected for when it is asked for anyway.
  */
-static struct block ipcc = { "ipcc", 0x00408000, 0x1000 };
+static struct block ipcc = { "ipcc", 0x00406000, 0x1000 };
 #define IPCC_SEND               0x0c            /* write client << 16 | signal: ring it */
 #define IPCC_RECEIVED           0x10            /* who rang us, the same way; all ones: nobody */
 #define IPCC_ENABLE             0x14            /* write: hear that client's signal */
@@ -866,7 +872,7 @@ step_mailbox(void)
 		get(&aoss, "the length of the message in our mailbox", box);
 	}
 
-	announce("read who has rung our doorbell (IPCC, 0x408000: the first access to that block)");
+	announce("read who has rung our doorbell (IPCC, 0x406000: the first access to that block)");
 	get(&ipcc, "received", IPCC_RECEIVED);
 	return true;
 }
