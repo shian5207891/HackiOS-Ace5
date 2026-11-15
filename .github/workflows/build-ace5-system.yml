@@ -85,7 +85,7 @@ jobs:
 
       - name: 编译 userland（中文 + REST=1 全部服务 + RWA_PACKED16）
         run: |
-          GL=1 PREBUILT= REST=1 RWA_PACKED16=1 bash userland/build.sh
+          GL=1 PREBUILT= REST=1 RWA_PACKED16=1 FORCE="com.apple.chronod" bash userland/build.sh
 
       - name: 编译 GPU userland（Metal）
         run: tools/ace5/build-gpu-userland.sh local/components --metal
