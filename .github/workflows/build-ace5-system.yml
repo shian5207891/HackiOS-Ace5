@@ -36,7 +36,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl xz-utils ca-certificates \
             clang-18 lld-18 llvm-18 \
-            7zip \
+            7zip zstd \
             flex bison m4 perl unzip zip \
             python3 python3-venv python3-pip python3-mako python3-yaml \
             autoconf automake libtool pkg-config libncurses-dev \
@@ -82,6 +82,22 @@ jobs:
           export AIR=1 DRIVERS=softpipe,freedreno
           tools/mk-mesa.sh
           ls -l xnu-deps/build/mesa/out | head
+
+      - name: 取越狱前缀（Procursus rootless + Sileo + ElleKit）
+        run: |
+          # userland/build.sh copies ../jb/root/var/jb into the image as /jb and its
+          # Applications/*.app into /Applications; init puts /jb at /var/jb at every boot.
+          # It is not in the repository, so fetch it here: the bootstrap is ~100 MB.
+          bash tools/mk-jb.sh
+          # TrollStore's own app, so that its icon is on the home screen. What it is for -- installing
+          # IPAs that Apple's CoreTrust would refuse -- is the one thing this port does not need, since
+          # nothing here enforces Apple's signing the way a stock phone does; it is here because it was
+          # asked for. build.sh copies every .app of the prefix's Applications into /Applications.
+          curl -sL --fail -o local/trollstore.tar \
+            https://github.com/opa334/TrollStore/releases/latest/download/TrollStore.tar
+          mkdir -p jb/root/var/jb/Applications
+          tar -C jb/root/var/jb/Applications -xf local/trollstore.tar TrollStore.app
+          ls -d jb/root/var/jb/Applications/*.app
 
       - name: 编译 userland（中文 + REST=1 全部服务 + RWA_PACKED16）
         run: |
