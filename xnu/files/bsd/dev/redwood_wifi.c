@@ -4141,6 +4141,7 @@ redwood_wifi_quiesce(void)
 
 static void redwood_pcie_probe(uint32_t step);
 static void redwood_pcie_thread(void *parameter, wait_result_t result);
+static uint32_t pcie_probe_step;
 #define REDWOOD_SOC_BASE        0x00400000ul    /* where the loader says the phone's peripherals begin (its "redwood") */
 
 extern vm_offset_t pe_arm_get_soc_base_phys(void);
@@ -4470,8 +4471,6 @@ static const struct { uint32_t off; const char *name; } pcie_clocks[] = {
  * -- at the Wi-Fi driver's own start, before SpringBoard exists -- a hang there is a black screen and
  * no log at all. From here the system is up first, the log has been written, and the last line says
  * which write did it. */
-static uint32_t pcie_probe_step;
-
 static void
 redwood_pcie_thread(void *parameter, __unused wait_result_t result)
 {
