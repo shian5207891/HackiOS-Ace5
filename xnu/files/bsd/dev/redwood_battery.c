@@ -79,6 +79,9 @@ battery_snapshot(struct loader_battery *out)
 {
 	uint32_t before, after;
 
+	if (shared_battery == NULL) {
+		return false;   /* started by battery_fake alone: there is no loader structure to read */
+	}
 	for (unsigned retry = 0; retry < 4; retry++) {
 		before = shared_battery->sequence;
 		if (before & 1) continue;
@@ -177,14 +180,6 @@ redwood_battery_report(const struct redwood_battery_state *b)
 static void
 battery_thread(__unused void *parameter, __unused wait_result_t result)
 {
-	{
-		uint32_t fake = 0;
-		if (PE_parse_boot_argn("battery_fake", &fake, sizeof(fake)) && fake <= 100) {
-			battery_fake_percent = (int)fake;
-			printf("battery: battery_fake=%u: reporting a FIXED %u%% (the fuel gauge is the audio DSP's, "
-			    "and it is not running)\n", fake, fake);
-		}
-	}
 	for (unsigned tick = 0;; tick++) {
 		battery_poll();
 		if (tick % 12 == 0) {
@@ -206,6 +201,16 @@ redwood_battery_init(void)
 	vm_offset_t page;
 	thread_t thread;
 
+	{
+		uint32_t fake = 0;
+		if (PE_parse_boot_argn("battery_fake", &fake, sizeof(fake)) && fake <= 100) {
+			battery_fake_percent = (int)fake;
+			printf("battery: battery_fake=%u: reporting a FIXED %u%% (no loader cache, and the fuel "
+			    "gauge is the audio DSP's)\n", fake, fake);
+			if (kernel_thread_start(battery_thread, NULL, &thread) == KERN_SUCCESS) thread_deallocate(thread);
+			return;
+		}
+	}
 	if (!PE_parse_boot_argn("battery", &enabled, sizeof(enabled)) || !enabled) return;
 	if (!PE_parse_boot_argn("battery_shared_pa", &shared_pa, sizeof(shared_pa)) || shared_pa == 0) {
 		printf("battery: xnuloader did not provide battery_shared_pa\n");
