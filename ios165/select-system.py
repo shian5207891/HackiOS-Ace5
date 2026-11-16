@@ -202,8 +202,10 @@ def wanted_file(path, size):
         return size <= MAX_FONT or path in TRIMMED_FONTS
     if path.startswith(ALL_PICTURES) and path.lower().endswith('.png'):
         return True
+    if path.rsplit('/', 1)[-1] in KEEP_PROGRAM:
+        return True                     # wherever it lives (frameworks, usr/sbin, usr/libexec)
     if path.startswith(('usr/libexec/', 'usr/sbin/')):
-        return path.rsplit('/', 1)[-1] in KEEP_PROGRAM or size <= BIG_PROGRAM
+        return size <= BIG_PROGRAM
     if path.startswith(('Applications/', HEALTH)):
         return not path.lower().endswith(SKIP_APP_EXT) and '.mlmodelc/' not in path
     if path.startswith(FRAMEWORKS):
