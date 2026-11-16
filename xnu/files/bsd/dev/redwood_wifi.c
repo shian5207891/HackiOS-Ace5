@@ -4459,13 +4459,19 @@ redwood_wifi_init(void)
  *   4  WLAN_EN (TLMM GPIO 16) high, then map PARF, PHY, ELBI and DBI and read each
  *   5  PERST (GPIO 94) low, hold, release; the PHY's 115-write sequence from the board's device tree
  *   6  wait for the PHY's PLL (bit 6 of PHY+0x214), then print PARF's LTSSM (reading only)
- *   7  the endpoint's identity through DBI: 0x00 vendor/device (want 17cb:1107), 0x08 class,
- *      0x70 link capabilities, 0x74 control + 0x76 status (speed and negotiated width)  [reads only]
- *   8  the iATU as the boot loader left it, region by region as it is selected        [reads only]
+ *   7  ELBI: the controller's own view of the link (bit 0 = up); with wifi_pcie_dbi=1 also the
+ *      endpoint's config header through DBI -- 0x00 vendor/device (want 17cb:1107), 0x08 class,
+ *      0x70/0x74 link capabilities and control/status
+ *   8  the iATU as the boot loader left it, behind the same wifi_pcie_dbi=1 as step 7
  *   9  programme outbound region 0 so that a range of this CPU's addresses means the endpoint's
  *      registers -- needs wifi_pcie_cpu=<cpu phys> and wifi_pcie_tgt=<endpoint phys>, and without
  *      them it writes nothing at all
  *  10  dump the endpoint's first 1 KB through that window (the MHI registers), needs wifi_pcie_dump=1
+ *
+ * Why DBI has a switch of its own: the first run of step 7 read DBI straight after the LTSSM line and
+ * the machine went black. DBI is the bridge to the endpoint's config space, and a read of it while the
+ * controller has not finished coming up hangs the AXI bus instead of returning an error. Steps 1 to 6
+ * touch only PARF, PHY, GCC and TLMM, and those have all been read before without harm.
  *
  * Everything past step 10 writes into the endpoint: the MHI rings, the firmware image, then WMI over
  * HTC, then 802.11 itself. None of it is written yet, and the dump of step 10 is what it waits for. */
@@ -4649,6 +4655,30 @@ redwood_pcie_probe(uint32_t step)
 		printf("wifi: PCIe: step 7: DBI did not map\n");
 		return;
 	}
+	/*
+	 * Everything up to here has been PARF, PHY and ELBI: registers of the controller itself, whose
+	 * clocks step 2 turned on. DBI is different -- it is the bridge to the endpoint's config space,
+	 * and a read of it while the controller has not finished coming up is not an error code but a
+	 * hang of the AXI bus, which takes the whole machine with it (the black screen after the first
+	 * run of this step). So it is behind its own switch: wifi_pcie=7 alone reads the controller's own
+	 * view of the link -- ELBI -- and stops; wifi_pcie_dbi=1 adds the endpoint's config header.
+	 */
+	{
+		uint32_t dbi_on = 0;
+		uint32_t elbi_now = rd(elbi);
+
+		PE_parse_boot_argn("wifi_pcie_dbi", &dbi_on, sizeof(dbi_on));
+		printf("wifi: PCIe: step 7: ELBI %#x (the controller's own view: bit 0 is its link-up)\n", elbi_now);
+		if ((elbi_now & 1u) == 0) {
+			printf("wifi: PCIe: the controller does not consider the link up: not reading DBI\n");
+			return;
+		}
+		if (dbi_on == 0) {
+			printf("wifi: PCIe: the link looks up; wifi_pcie_dbi=1 reads the endpoint's config header. Left "
+			    "alone until then: a DBI read of a controller that is not ready hangs the bus, not a register.\n");
+			return;
+		}
+	}
 	{
 		uint32_t id = rd(dbi + 0x00UL);
 		uint32_t class_rev = rd(dbi + 0x08UL);
@@ -4688,6 +4718,14 @@ redwood_pcie_probe(uint32_t step)
 	 * SoC is exactly what this step reads back.
 	 */
 	{
+		uint32_t dbi_on = 0;
+
+		PE_parse_boot_argn("wifi_pcie_dbi", &dbi_on, sizeof(dbi_on));
+		if (dbi_on == 0) {
+			printf("wifi: PCIe: step 8: the iATU is behind the same switch as the rest of DBI "
+			    "(wifi_pcie_dbi=1); not read\n");
+			return;
+		}
 		printf("wifi: PCIe: step 8: iATU registers as they are (viewport %#x)\n", rd(dbi + 0x900UL));
 		for (unsigned offset = 0x900; offset <= 0x92c; offset += 4) {
 			printf("wifi: PCIe:   iATU %#03x = %#x\n", offset, rd(dbi + offset));
