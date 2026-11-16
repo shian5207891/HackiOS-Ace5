@@ -4533,16 +4533,53 @@ redwood_pcie_probe(uint32_t step)
 	    rd(gcc + GCC_PCIE0_GDSCR), rd(gcc + GCC_PCIE0_PHY_GDSCR));
 	if (step < 2) return;
 
-	/* clocks: the vote register first (these branches are gated by a vote), then the branch itself */
-	wr(gcc + 0x52008UL, 0x10);            /* aux / slv_q2a family votes */
-	wr(gcc + 0x52000UL, 0x10);            /* phy_rchng family votes */
-	for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
-		wr(gcc + pcie_clocks[i].off, 1);
+	/*
+	 * The clocks. Three groups of registers, and the first two are guesses that have cost the machine:
+	 *
+	 *   the six branch registers below (0x6b020 .. 0x10058) are GCC's "CBCR" branch registers, whose
+	 *   bit 0 is the clock's own enable -- the one write here that means what it says;
+	 *
+	 *   two "vote" registers (0x52000 and 0x52008) were written with 0x10 on the theory that the
+	 *   branches are gated by a family vote. Nothing in this board's device tree names them, and a
+	 *   GCC vote register that is not what it was taken for gates whatever its bits really belong to:
+	 *   the NoC, the display, memory. That is a machine that stops dead, and the run of step 2 did
+	 *   exactly that -- froze where it stood and went black. They are now optics only unless
+	 *   wifi_pcie_vote=1 says to write them anyway.
+	 *
+	 * So: step 2 reads and reports, wifi_pcie_clk=1 enables the six branches one at a time (a line
+	 * each, so the last line in a log that stops says which one), and the votes stay untouched.
+	 */
+	{
+		uint32_t clk = 0, vote = 0;
+
+		PE_parse_boot_argn("wifi_pcie_clk", &clk, sizeof(clk));
+		PE_parse_boot_argn("wifi_pcie_vote", &vote, sizeof(vote));
+		printf("wifi: PCIe: step 2: the clock registers as they are\n");
+		for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
+			printf("wifi: PCIe:   %-10s %#08x = %#x\n", pcie_clocks[i].name, pcie_clocks[i].off,
+			    rd(gcc + pcie_clocks[i].off));
+		}
+		printf("wifi: PCIe:   vote 0x52000 = %#x, vote 0x52008 = %#x (not written; wifi_pcie_vote=1 does)\n",
+		    rd(gcc + 0x52000UL), rd(gcc + 0x52008UL));
+		if (vote != 0) {
+			printf("wifi: PCIe: step 2: wifi_pcie_vote=1: writing the two vote registers\n");
+			wr(gcc + 0x52008UL, 0x10);
+			wr(gcc + 0x52000UL, 0x10);
+			delay_for_interval(2, NSEC_PER_MSEC);
+		}
+		if (clk != 0) {
+			for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
+				printf("wifi: PCIe: enabling %s (%#08x)\n", pcie_clocks[i].name, pcie_clocks[i].off);
+				wr(gcc + pcie_clocks[i].off, 1);
+				delay_for_interval(1, NSEC_PER_MSEC);
+			}
+			printf("wifi: PCIe: clocks after (slv_axi %#x mstr_axi %#x cfg_ahb %#x pipe %#x phy_rchng %#x cnoc_sf %#x)\n",
+			    rd(gcc + 0x6b020UL), rd(gcc + 0x6b02cUL), rd(gcc + 0x6b038UL),
+			    rd(gcc + 0x6b048UL), rd(gcc + 0x6b054UL), rd(gcc + 0x10058UL));
+		} else {
+			printf("wifi: PCIe: not enabling anything (wifi_pcie_clk=1 does)\n");
+		}
 	}
-	delay_for_interval(2, NSEC_PER_MSEC);
-	printf("wifi: PCIe: clocks on (slv_axi %#x mstr_axi %#x cfg_ahb %#x pipe %#x phy_rchng %#x cnoc_sf %#x)\n",
-	    rd(gcc + 0x6b020UL), rd(gcc + 0x6b02cUL), rd(gcc + 0x6b038UL),
-	    rd(gcc + 0x6b048UL), rd(gcc + 0x6b054UL), rd(gcc + 0x10058UL));
 	if (step < 3) return;
 
 	/* out of reset: BCR bit 0 asserts, 0 releases */
