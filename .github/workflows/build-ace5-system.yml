@@ -83,6 +83,16 @@ jobs:
           tools/mk-mesa.sh
           ls -l xnu-deps/build/mesa/out | head
 
+      - name: 诊断：这些守护进程在 iOS 的哪里
+        run: |
+          # The applications ask for them by service name, and a missing program means mkjobs drops the
+          # job and the application aborts with nothing in the log. This step says where each one is in
+          # the extracted tree -- rootfs or the OS cryptex -- before the jobs are made from it.
+          for n in photolibraryd assetsd mediaserverd healthd maild accountsd passd; do
+            echo "--- $n"
+            find ios165 -name "$n" -o -name "$n.plist" 2>/dev/null | head -6
+          done
+
       - name: 取越狱前缀（Procursus rootless + Sileo + ElleKit）
         run: |
           # userland/build.sh copies ../jb/root/var/jb into the image as /jb and its
