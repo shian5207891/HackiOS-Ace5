@@ -4492,9 +4492,36 @@ redwood_wifi_init(void)
 #define GCC_PCIE0_GDSCR     0x6b004UL
 #define GCC_PCIE0_PHY_GDSCR 0x6c000UL
 
-static const struct { uint32_t off; const char *name; } pcie_clocks[] = {
-	{ 0x6b020UL, "slv_axi" }, { 0x6b02cUL, "mstr_axi" }, { 0x6b038UL, "cfg_ahb" },
-	{ 0x6b048UL, "pipe"    }, { 0x6b054UL, "phy_rchng"}, { 0x10058UL, "cnoc_sf_axi" },
+/*
+ * PCIe0's clocks, as Linux mainline has them for THIS SoC (drivers/clk/qcom/gcc-sm8650.c), not for
+ * the SM8550 the other ports were written on. Every one of them is a "voted" branch: its halt
+ * register is a status register whose bit 31 says CLK_OFF, and the clock is turned on by setting a
+ * bit in one of two vote registers -- NOT by writing to the halt register, which is what this file
+ * did first and why step 2 wrote into the wrong places:
+ *
+ *   halt 0x6b020 slv_axi      vote 0x52008 bit 0        halt 0x6b054 phy_rchng  vote 0x52000 bit 22
+ *   halt 0x6b02c mstr_axi     vote 0x52008 bit 1        halt 0x10058 cnoc_sf_axi vote 0x52008 bit 6
+ *   halt 0x6b038 cfg_ahb      vote 0x52008 bit 2        halt 0x10064 aggre_noc  vote 0x52000 bit 12
+ *   halt 0x6b03c aux          vote 0x52008 bit 3        halt 0x6b018 qmip_ahb   vote 0x52000 bit 11
+ *   halt 0x6b048 pipe         vote 0x52008 bit 4        halt 0x10050 cfg_noc_ahb vote 0x52000 bit 20
+ *   halt 0x6b01c slv_q2a_axi  vote 0x52008 bit 5        halt 0x10074 ddrss_sf   vote 0x52000 bit 19
+ */
+#define GCC_PCIE0_VOTE8         0x52008UL       /* bits 0..6: slv_axi, mstr_axi, cfg_ahb, aux, pipe, slv_q2a, cnoc_sf */
+#define GCC_PCIE0_VOTE0         0x52000UL       /* bits 11, 12, 19, 20, 22 */
+#define GCC_PCIE0_COLLAPSE      0x5214cUL       /* bit 0 collapses PCIe0, bit 3 its PHY */
+#define VOTE8_ALL               0x7fU
+#define VOTE0_WIFI              ((1u << 22) | (1u << 12))       /* phy_rchng, aggre_noc_pcie_axi */
+
+static const struct { uint32_t halt, vote, bit; const char *name; } pcie_clocks[] = {
+	{ 0x6b020UL, GCC_PCIE0_VOTE8, 0,  "slv_axi" },
+	{ 0x6b02cUL, GCC_PCIE0_VOTE8, 1,  "mstr_axi" },
+	{ 0x6b038UL, GCC_PCIE0_VOTE8, 2,  "cfg_ahb" },
+	{ 0x6b03cUL, GCC_PCIE0_VOTE8, 3,  "aux" },
+	{ 0x6b048UL, GCC_PCIE0_VOTE8, 4,  "pipe" },
+	{ 0x6b01cUL, GCC_PCIE0_VOTE8, 5,  "slv_q2a_axi" },
+	{ 0x10058UL, GCC_PCIE0_VOTE8, 6,  "cnoc_sf_axi" },
+	{ 0x10064UL, GCC_PCIE0_VOTE0, 12, "aggre_noc_pcie_axi" },
+	{ 0x6b054UL, GCC_PCIE0_VOTE0, 22, "phy_rchng" },
 };
 
 /* The probe runs from a thread of its own, thirty seconds after the system is up: every write in it
@@ -4522,62 +4549,73 @@ redwood_pcie_probe(uint32_t step)
 	gcc = ml_io_map(GCC_PA, 0xc0000UL);
 	if (gcc == 0) { printf("wifi: PCIe: GCC did not map\n"); return; }
 
-	printf("wifi: PCIe: GDSCR before: core %#x, phy %#x\n",
-	    rd(gcc + GCC_PCIE0_GDSCR), rd(gcc + GCC_PCIE0_PHY_GDSCR));
+	printf("wifi: PCIe: GDSCR before: core %#x, phy %#x, collapse %#x\n",
+	    rd(gcc + GCC_PCIE0_GDSCR), rd(gcc + GCC_PCIE0_PHY_GDSCR), rd(gcc + GCC_PCIE0_COLLAPSE));
 
-	/* power on: clear the software collapse bit (31) of each rail */
+	/* power on. Mainline's gdsc_enable does two things for these two rails (both are VOTABLE with
+	 * RETAIN_FF_ENABLE in gcc-sm8650.c): clear the rail's bit in the collapse register -- on this SoC
+	 * 0x5214c, bit 0 for PCIe0 and bit 3 for its PHY, which is what holds them down -- and then set
+	 * the software-collapse bit (31) of each GDSCR to "on". */
+	wr(gcc + GCC_PCIE0_COLLAPSE, rd(gcc + GCC_PCIE0_COLLAPSE) & ~((1u << 0) | (1u << 3)));
+	delay_for_interval(1, NSEC_PER_MSEC);
 	v = rd(gcc + GCC_PCIE0_GDSCR);      wr(gcc + GCC_PCIE0_GDSCR, v & ~(1u << 31));
 	v = rd(gcc + GCC_PCIE0_PHY_GDSCR);  wr(gcc + GCC_PCIE0_PHY_GDSCR, v & ~(1u << 31));
 	delay_for_interval(2, NSEC_PER_MSEC);
-	printf("wifi: PCIe: GDSCR after:  core %#x, phy %#x\n",
-	    rd(gcc + GCC_PCIE0_GDSCR), rd(gcc + GCC_PCIE0_PHY_GDSCR));
+	printf("wifi: PCIe: GDSCR after:  core %#x, phy %#x, collapse %#x\n",
+	    rd(gcc + GCC_PCIE0_GDSCR), rd(gcc + GCC_PCIE0_PHY_GDSCR), rd(gcc + GCC_PCIE0_COLLAPSE));
 	if (step < 2) return;
 
 	/*
-	 * The clocks. Three groups of registers, and the first two are guesses that have cost the machine:
+	 * The clocks, now with the registers this SoC really has (see the table above).
 	 *
-	 *   the six branch registers below (0x6b020 .. 0x10058) are GCC's "CBCR" branch registers, whose
-	 *   bit 0 is the clock's own enable -- the one write here that means what it says;
+	 * What went wrong before: this step wrote 1 to each halt register -- which does not enable a
+	 * voted branch, it is a status register -- and wrote 0x10 to the two vote registers, where bit 4
+	 * of 0x52000 is not a clock vote at all (that register's bits are 11, 12, 19, 20 and 22). A bit
+	 * that is not a vote but something else in a GCC register can take down whatever it does belong
+	 * to, and that is the run that froze and went black.
 	 *
-	 *   two "vote" registers (0x52000 and 0x52008) were written with 0x10 on the theory that the
-	 *   branches are gated by a family vote. Nothing in this board's device tree names them, and a
-	 *   GCC vote register that is not what it was taken for gates whatever its bits really belong to:
-	 *   the NoC, the display, memory. That is a machine that stops dead, and the run of step 2 did
-	 *   exactly that -- froze where it stood and went black. They are now optics only unless
-	 *   wifi_pcie_vote=1 says to write them anyway.
-	 *
-	 * So: step 2 reads and reports, wifi_pcie_clk=1 enables the six branches one at a time (a line
-	 * each, so the last line in a log that stops says which one), and the votes stay untouched.
+	 * Step 2 alone only reads. wifi_pcie_clk=1 casts the votes, then waits for each branch's CLK_OFF
+	 * to clear and prints it, so a machine that stops says which clock it was waiting for.
 	 */
 	{
-		uint32_t clk = 0, vote = 0;
+		uint32_t clk = 0, before8, before0;
 
 		PE_parse_boot_argn("wifi_pcie_clk", &clk, sizeof(clk));
-		PE_parse_boot_argn("wifi_pcie_vote", &vote, sizeof(vote));
-		printf("wifi: PCIe: step 2: the clock registers as they are\n");
+		before8 = rd(gcc + GCC_PCIE0_VOTE8);
+		before0 = rd(gcc + GCC_PCIE0_VOTE0);
+		printf("wifi: PCIe: step 2: votes now 0x52008 = %#x, 0x52000 = %#x, collapse 0x5214c = %#x\n",
+		    before8, before0, rd(gcc + GCC_PCIE0_COLLAPSE));
 		for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
-			printf("wifi: PCIe:   %-10s %#08x = %#x\n", pcie_clocks[i].name, pcie_clocks[i].off,
-			    rd(gcc + pcie_clocks[i].off));
+			printf("wifi: PCIe:   %-18s halt %#08x = %#x (%s)\n", pcie_clocks[i].name,
+			    pcie_clocks[i].halt, rd(gcc + pcie_clocks[i].halt),
+			    (rd(gcc + pcie_clocks[i].halt) & (1u << 31)) ? "CLK_OFF" : "running");
 		}
-		printf("wifi: PCIe:   vote 0x52000 = %#x, vote 0x52008 = %#x (not written; wifi_pcie_vote=1 does)\n",
-		    rd(gcc + 0x52000UL), rd(gcc + 0x52008UL));
-		if (vote != 0) {
-			printf("wifi: PCIe: step 2: wifi_pcie_vote=1: writing the two vote registers\n");
-			wr(gcc + 0x52008UL, 0x10);
-			wr(gcc + 0x52000UL, 0x10);
-			delay_for_interval(2, NSEC_PER_MSEC);
-		}
-		if (clk != 0) {
-			for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
-				printf("wifi: PCIe: enabling %s (%#08x)\n", pcie_clocks[i].name, pcie_clocks[i].off);
-				wr(gcc + pcie_clocks[i].off, 1);
-				delay_for_interval(1, NSEC_PER_MSEC);
-			}
-			printf("wifi: PCIe: clocks after (slv_axi %#x mstr_axi %#x cfg_ahb %#x pipe %#x phy_rchng %#x cnoc_sf %#x)\n",
-			    rd(gcc + 0x6b020UL), rd(gcc + 0x6b02cUL), rd(gcc + 0x6b038UL),
-			    rd(gcc + 0x6b048UL), rd(gcc + 0x6b054UL), rd(gcc + 0x10058UL));
+		if (clk == 0) {
+			printf("wifi: PCIe: step 2: nothing written (wifi_pcie_clk=1 casts the votes)\n");
 		} else {
-			printf("wifi: PCIe: not enabling anything (wifi_pcie_clk=1 does)\n");
+			/* the GDSCs first: out of collapse, then on -- what gdsc_enable does in mainline */
+			printf("wifi: PCIe: step 2: uncollapsing PCIe0 (0x5214c bit 0) and its PHY (bit 3)\n");
+			wr(gcc + GCC_PCIE0_COLLAPSE, rd(gcc + GCC_PCIE0_COLLAPSE) & ~((1u << 0) | (1u << 3)));
+			delay_for_interval(1, NSEC_PER_MSEC);
+			printf("wifi: PCIe: step 2: voting %#x in 0x52008 and %#x in 0x52000\n", VOTE8_ALL, VOTE0_WIFI);
+			wr(gcc + GCC_PCIE0_VOTE8, rd(gcc + GCC_PCIE0_VOTE8) | VOTE8_ALL);
+			wr(gcc + GCC_PCIE0_VOTE0, rd(gcc + GCC_PCIE0_VOTE0) | VOTE0_WIFI);
+			delay_for_interval(1, NSEC_PER_MSEC);
+			for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
+				uint32_t halt = 0;
+
+				for (unsigned t = 0; t < 20; t++) {
+					halt = rd(gcc + pcie_clocks[i].halt);
+					if ((halt & (1u << 31)) == 0) {
+						break;
+					}
+					delay_for_interval(1, NSEC_PER_MSEC);
+				}
+				printf("wifi: PCIe:   %-18s halt %#08x = %#x (%s)\n", pcie_clocks[i].name,
+				    pcie_clocks[i].halt, halt, (halt & (1u << 31)) ? "STILL CLK_OFF" : "running");
+			}
+			printf("wifi: PCIe: step 2: votes after 0x52008 = %#x, 0x52000 = %#x\n",
+			    rd(gcc + GCC_PCIE0_VOTE8), rd(gcc + GCC_PCIE0_VOTE0));
 		}
 	}
 	if (step < 3) return;
