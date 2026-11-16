@@ -4451,13 +4451,32 @@ redwood_wifi_init(void)
  *   WLAN_EN   TLMM GPIO 16 (0x0f100000 + 0x1000 * 16)
  *
  * Boot-arg wifi_pcie=N, deliberately separate from wifi=1: this touches power and resets, and a mistake
- * here hangs the bus. Step by step, so that the last line printed says where it stopped. */
+ * here hangs the bus. Step by step, so that the last line printed says where it stopped. The steps:
+ *
+ *   1  GCC: read the two GDSCRs, then clear each rail's software-collapse bit (31)
+ *   2  the clock branches and their vote registers
+ *   3  the four resets (PCIe0, its PHY, the PHY's common block and its COM)
+ *   4  WLAN_EN (TLMM GPIO 16) high, then map PARF, PHY, ELBI and DBI and read each
+ *   5  PERST (GPIO 94) low, hold, release; the PHY's 115-write sequence from the board's device tree
+ *   6  wait for the PHY's PLL (bit 6 of PHY+0x214), then print PARF's LTSSM (reading only)
+ *   7  the endpoint's identity through DBI: 0x00 vendor/device (want 17cb:1107), 0x08 class,
+ *      0x70 link capabilities, 0x74 control + 0x76 status (speed and negotiated width)  [reads only]
+ *   8  the iATU as the boot loader left it, region by region as it is selected        [reads only]
+ *   9  programme outbound region 0 so that a range of this CPU's addresses means the endpoint's
+ *      registers -- needs wifi_pcie_cpu=<cpu phys> and wifi_pcie_tgt=<endpoint phys>, and without
+ *      them it writes nothing at all
+ *  10  dump the endpoint's first 1 KB through that window (the MHI registers), needs wifi_pcie_dump=1
+ *
+ * Everything past step 10 writes into the endpoint: the MHI rings, the firmware image, then WMI over
+ * HTC, then 802.11 itself. None of it is written yet, and the dump of step 10 is what it waits for. */
+
 #include "redwood_pcie_table.h"
 
 #define GCC_PA          0x100000UL
 #define PCIE_PARF_PA    0x1c00000UL
 #define PCIE_PHY_PA     0x1c06000UL
 #define PCIE_ELBI_PA    0x60001000UL
+#define PCIE_DBI_PA     0x60000000UL      /* dt: qcom,pcie@1c00000: "dbi" 0x60000000, 0xf1d */
 #define TLMM_PA         0x0f100000UL
 
 #define GCC_PCIE0_BCR       0x6b000UL
@@ -4487,7 +4506,7 @@ redwood_pcie_thread(void *parameter, __unused wait_result_t result)
 static void
 redwood_pcie_probe(uint32_t step)
 {
-	vm_offset_t gcc, parf, phy, elbi, tlmm;
+	vm_offset_t gcc, parf, phy, elbi, tlmm, dbi;
 	uint32_t v;
 
 	printf("wifi: PCIe0: step %u of the radio's bring-up\n", step);
@@ -4541,6 +4560,7 @@ redwood_pcie_probe(uint32_t step)
 	parf = ml_io_map(PCIE_PARF_PA, 0x3000UL);
 	phy  = ml_io_map(PCIE_PHY_PA, 0x2000UL);
 	elbi = ml_io_map(PCIE_ELBI_PA, 0x1000UL);
+	dbi  = ml_io_map(PCIE_DBI_PA, 0x1000UL);
 	if (parf == 0 || phy == 0 || elbi == 0) {
 		printf("wifi: PCIe: a block did not map (parf %#lx phy %#lx elbi %#lx)\n", parf, phy, elbi);
 		return;
@@ -4608,6 +4628,165 @@ redwood_pcie_probe(uint32_t step)
 
 			printf("wifi: PCIe: PARF LTSSM %#x%s\n", ltssm, (ltssm & 0xff) == 0x11 ? " (L0: the link is up)" : " (not L0)");
 		}
+	}
+	if (step < 7) return;
+
+	/*
+	 * Step 7: is anything behind the link?
+	 *
+	 * The controller's "designware configuration space" is at DBI 0x60000000 and holds the endpoint's
+	 * own config header as the link sees it: 0x00 is vendor id in the low half and device id in the
+	 * high half, 0x08 class and revision, and a type 1 header has the link's capabilities at 0x70,
+	 * its control word at 0x74 and its status word at 0x76 (speed in the low four bits, negotiated
+	 * width in the four above). All reads: nothing here changes the state of the bus.
+	 *
+	 * What it answers settles one question the LTSSM alone cannot: the PHY can say L0 while the
+	 * endpoint is dead (a wrong PERST, a rail that never came up), and then DBI reads back 0xffffffff.
+	 * The Ace 5's radio is 0x17cb:0x1107 -- qualcomm's vendor id and the WCN7850's device id, from
+	 * its own device tree (qcom,pcie@1c00000/pcie0_rp/cnss_pci0).
+	 */
+	if (dbi == 0) {
+		printf("wifi: PCIe: step 7: DBI did not map\n");
+		return;
+	}
+	{
+		uint32_t id = rd(dbi + 0x00UL);
+		uint32_t class_rev = rd(dbi + 0x08UL);
+		uint32_t link_cap = rd(dbi + 0x70UL);
+		uint32_t link_ctl_status = rd(dbi + 0x74UL);
+		uint32_t status = link_ctl_status >> 16;
+
+		printf("wifi: PCIe: step 7: the endpoint at DBI %#lx\n", (unsigned long) PCIE_DBI_PA);
+		printf("wifi: PCIe:   vendor %#x, device %#x (want 17cb:1107)\n", id & 0xffffu, id >> 16);
+		printf("wifi: PCIe:   class %#x, revision %#x\n", class_rev >> 8, class_rev & 0xffu);
+		printf("wifi: PCIe:   link capabilities %#x; control %#x; status %#x (speed %u, width x%u)\n",
+		    link_cap, link_ctl_status & 0xffffu, status, status & 0xfu, (status >> 4) & 0x3fu);
+		if (id == 0xffffffffu || (id & 0xffffu) == 0xffffu) {
+			printf("wifi: PCIe: nothing answers behind the link (vendor id all ones): the endpoint is not up\n");
+			return;
+		}
+		if ((id & 0xffffu) != 0x17cb || (id >> 16) != 0x1107) {
+			printf("wifi: PCIe: that is not the Ace 5's radio (expected 17cb:1107): stopping before any BAR work\n");
+			return;
+		}
+	}
+	if (step < 8) return;
+
+	/*
+	 * Step 8: the address translation units, as the boot loader left them.
+	 *
+	 * The endpoint's own registers (MHI's doorbells and rings, where the firmware's image is
+	 * downloaded through) are memory in the endpoint's address space, and this CPU reaches them
+	 * only through an iATU window: base and limit on our side, target on theirs. Selecting a region
+	 * means writing the viewport, so the dump below reads whatever region is selected now rather
+	 * than picking one -- still no write, and it says whether the boot loader left a window that
+	 * reaches the radio at all, which is the next thing the MHI bring-up needs to know.
+	 *
+	 * Steps after this are the ones that write into the endpoint (iATU programming, then MHI: its
+	 * firmware image, the rings, and only then WMI over HTC and 802.11 itself), and they wait for
+	 * this dump: the target address of the window is the endpoint's BAR0, and where that is on this
+	 * SoC is exactly what this step reads back.
+	 */
+	{
+		printf("wifi: PCIe: step 8: iATU registers as they are (viewport %#x)\n", rd(dbi + 0x900UL));
+		for (unsigned offset = 0x900; offset <= 0x92c; offset += 4) {
+			printf("wifi: PCIe:   iATU %#03x = %#x\n", offset, rd(dbi + offset));
+		}
+		printf("wifi: PCIe:   ELBI %#x (bit 0 = link up in the controller's own view)\n", rd(elbi));
+	}
+	if (step < 9) return;
+
+	/*
+	 * Step 9: give ourselves a window onto the endpoint's registers.
+	 *
+	 * This is the first step that writes to the controller, so it writes nothing unless it is told
+	 * where: two boot arguments, both a physical address in hex --
+	 *
+	 *   wifi_pcie_cpu=0x...   an address range on this CPU that nothing else in this kernel uses
+	 *   wifi_pcie_tgt=0x...   the endpoint address that range is to mean (its BAR0)
+	 *   wifi_pcie_win_size=0x...  how many bytes, 64 KB if not given
+	 *
+	 * Without them the step says what it would do and stops, which is the point: a window onto the
+	 * wrong range is a machine check, not an error code, and this driver has no way to try again
+	 * after one. The iATU is the controller's address translator: region 0 outbound takes a CPU
+	 * address in its base/limit pair and answers every access in it with a read or write to the
+	 * same offset at the target address in the endpoint -- that is how the MHI registers below are
+	 * reached at all.
+	 */
+	{
+		uint32_t win_cpu = 0, win_tgt = 0, win_size = 0x10000;
+
+		PE_parse_boot_argn("wifi_pcie_cpu", &win_cpu, sizeof(win_cpu));
+		PE_parse_boot_argn("wifi_pcie_tgt", &win_tgt, sizeof(win_tgt));
+		PE_parse_boot_argn("wifi_pcie_win_size", &win_size, sizeof(win_size));
+		if (win_cpu == 0 || win_tgt == 0) {
+			printf("wifi: PCIe: step 9: no window asked for; give wifi_pcie_cpu=<cpu phys> and "
+			    "wifi_pcie_tgt=<endpoint phys> (and wifi_pcie_win_size=<bytes>) to map the endpoint's "
+			    "registers. Stopping without writing anything.\n");
+			return;
+		}
+		if (win_size < 0x1000 || win_size > 0x1000000 || (win_size & 0xfff) != 0 ||
+		    ((win_cpu | win_tgt) & 0xfff) != 0) {
+			printf("wifi: PCIe: step 9: window %#x..%#x -> %#x is not page-aligned or is out of range: "
+			    "not programmed\n", win_cpu, win_cpu + win_size, win_tgt);
+			return;
+		}
+		printf("wifi: PCIe: step 9: region 0 outbound, %#x..%#x -> endpoint %#x\n", win_cpu,
+		    win_cpu + win_size - 1, win_tgt);
+		wr(dbi + 0x900UL, 0x80000000u);            /* viewport: outbound region 0 */
+		wr(dbi + 0x904UL, win_cpu);                /* lower base, our side */
+		wr(dbi + 0x908UL, 0);                      /* upper base */
+		wr(dbi + 0x90cUL, win_cpu + win_size - 1); /* limit */
+		wr(dbi + 0x910UL, 0);                      /* control 1: off while it is set up */
+		wr(dbi + 0x914UL, win_tgt);                /* lower target, the endpoint */
+		wr(dbi + 0x918UL, 0);                      /* upper target */
+		wr(dbi + 0x910UL, 1u << 31);               /* and on */
+		wr(dbi + 0x920UL, 0);                      /* control 2 */
+		settle();
+		printf("wifi: PCIe: step 9: read back -- viewport %#x, base %#x, limit %#x, target %#x, control %#x\n",
+		    rd(dbi + 0x900UL), rd(dbi + 0x904UL), rd(dbi + 0x90cUL), rd(dbi + 0x914UL), rd(dbi + 0x910UL));
+	}
+	if (step < 10) return;
+
+	/*
+	 * Step 10: what is at the window's first 1 KB -- the MHI registers.
+	 *
+	 * Dumped rather than decoded on purpose. Which offset holds the doorbell array, which holds the
+	 * configuration word and which holds the channel status depends on the MHI revision the firmware
+	 * implements, and this port has no documentation for the WCN7850's: the dump tells us, and the
+	 * first word being a sane capability word (not 0xffffffff, which is what an unmapped window of a
+	 * dead endpoint answers) is what says the window works. The firmware download, the rings and WMI
+	 * come after this dump is read; every one of them writes into the endpoint.
+	 */
+	{
+		uint32_t win_cpu = 0, win_size = 0x10000, dump = 0;
+		vm_offset_t window;
+
+		PE_parse_boot_argn("wifi_pcie_cpu", &win_cpu, sizeof(win_cpu));
+		PE_parse_boot_argn("wifi_pcie_win_size", &win_size, sizeof(win_size));
+		PE_parse_boot_argn("wifi_pcie_dump", &dump, sizeof(dump));
+		if (win_cpu == 0 || win_size < 0x400) {
+			printf("wifi: PCIe: step 10: no window (see step 9)\n");
+			return;
+		}
+		if (dump == 0) {
+			printf("wifi: PCIe: step 10: the window is programmed; wifi_pcie_dump=1 reads it. Left alone "
+			    "until then: a read of a window that points somewhere wrong comes back as a machine "
+			    "check, not as an error.\n");
+			return;
+		}
+		window = ml_io_map(win_cpu, win_size);
+		if (window == 0) {
+			printf("wifi: PCIe: step 10: the window at %#x did not map\n", win_cpu);
+			return;
+		}
+		printf("wifi: PCIe: step 10: the endpoint's first 1 KB through %#x\n", win_cpu);
+		for (unsigned offset = 0; offset < 0x400; offset += 16) {
+			printf("wifi: PCIe:   +%03x = %08x %08x %08x %08x\n", offset, rd(window + offset),
+			    rd(window + offset + 4), rd(window + offset + 8), rd(window + offset + 12));
+		}
+		printf("wifi: PCIe: all zero or all ones everywhere means the window does not reach the endpoint; "
+		    "a few words with values in them mean it does, and the MHI rings are the next thing to set up\n");
 	}
 }
 
