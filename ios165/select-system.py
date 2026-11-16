@@ -136,6 +136,14 @@ SKIP_PREFIX = ('usr/share/tokenizer/', 'usr/share/firmware/', 'usr/share/mecabra
                HEALTH + 'Assets/FitnessUIAssets.bundle/') + \
     tuple(f'System/Library/{name}/' for name in SKIP_SYSTEM_LIBRARY)
 BIG_PROGRAM = 10 << 20           # daemons bigger than this (locationd, lskdd, ...) are not on the way to the screen
+# ... but the ones an application asks for by name are kept whatever their size. A launchd job whose
+# program is not in the image is dropped when the jobs are made (userland/mkjobs.py present()), and the
+# application then asks for a service nobody answers and aborts: Photos did it forty times in one boot
+# ("failed lookup: name = com.apple.photos.service ... requestor = MobileSlideShow", then SIGABRT), and
+# photolibraryd was not anywhere in the log, not even failing -- it was never installed. Same shape for
+# Health (healthd), TV and Podcasts (mediaserverd), Mail (maild) and the photo library's assetsd.
+KEEP_PROGRAM = ('photolibraryd', 'assetsd', 'mediaserverd', 'healthd', 'maild', 'accountsd',
+                'passd', 'storekitagent', 'itunesstored')
 # sound, outside the directories above: the virtual audio device, a plug-in that all of mediaserverd's
 # audio goes through, with its tunings (signal processing chains) for this model and for any, and the
 # system's own sounds. Not the neural networks among the tunings, nor the sounds of the watch.
@@ -195,7 +203,7 @@ def wanted_file(path, size):
     if path.startswith(ALL_PICTURES) and path.lower().endswith('.png'):
         return True
     if path.startswith(('usr/libexec/', 'usr/sbin/')):
-        return size <= BIG_PROGRAM
+        return path.rsplit('/', 1)[-1] in KEEP_PROGRAM or size <= BIG_PROGRAM
     if path.startswith(('Applications/', HEALTH)):
         return not path.lower().endswith(SKIP_APP_EXT) and '.mlmodelc/' not in path
     if path.startswith(FRAMEWORKS):
@@ -253,6 +261,17 @@ def main():
         while '/' in path:
             path = path.rsplit('/', 1)[0]
             chosen.add(path)
+
+    # what the applications' services came to: this line is the whole point of KEEP_PROGRAM, and it is
+    # the only place that says whether the program was in Apple's image at all and how big it was
+    print('daemons the applications ask for:')
+    for name in KEEP_PROGRAM:
+        hits = [(path, meta[path][4]) for path in meta if path.rsplit('/', 1)[-1] == name]
+        if not hits:
+            print(f'  {name:16s} NOT IN THE IMAGE')
+            continue
+        for path, size in hits:
+            print(f'  {name:16s} {size:9d} {path}  {"kept" if path in chosen else "DROPPED"}')
 
     total = count = 0
     with open(files_out, 'w') as files, open(manifest_out, 'w') as manifest:
