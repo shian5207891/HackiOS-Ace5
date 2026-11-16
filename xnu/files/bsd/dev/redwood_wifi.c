@@ -4497,15 +4497,17 @@ static const struct { uint32_t off; const char *name; } pcie_clocks[] = {
 	{ 0x6b048UL, "pipe"    }, { 0x6b054UL, "phy_rchng"}, { 0x10058UL, "cnoc_sf_axi" },
 };
 
-/* The probe runs from a thread of its own, twenty seconds after the system is up: every write in it
+/* The probe runs from a thread of its own, thirty seconds after the system is up: every write in it
  * can hang the bus (a register touched with its clock off is an abort), and started where it used to be
  * -- at the Wi-Fi driver's own start, before SpringBoard exists -- a hang there is a black screen and
  * no log at all. From here the system is up first, the log has been written, and the last line says
- * which write did it. */
+ * which write did it. It was twenty seconds; thirty is the number asked for, and the margin is the
+ * point -- SpringBoard is still drawing its first frames at twenty, and a hang then leaves a screen
+ * that never finishes coming up with the log cut off in the middle of a frame. */
 static void
 redwood_pcie_thread(void *parameter, __unused wait_result_t result)
 {
-	delay_for_interval(20, NSEC_PER_SEC);
+	delay_for_interval(30, NSEC_PER_SEC);
 	redwood_pcie_probe(pcie_probe_step);
 }
 
@@ -4743,6 +4745,12 @@ redwood_pcie_probe(uint32_t step)
 	 *   wifi_pcie_cpu=0x...   an address range on this CPU that nothing else in this kernel uses
 	 *   wifi_pcie_tgt=0x...   the endpoint address that range is to mean (its BAR0)
 	 *   wifi_pcie_win_size=0x...  how many bytes, 64 KB if not given
+ *   wifi_pcie_dbi=1       step 7 also reads the endpoint's config header through DBI, and step 8 the
+ *                         iATU; without it those two steps read only ELBI and stop
+ *   wifi_pcie_dump=1      step 10 reads the endpoint's first 1 KB through the window of step 9
+ *
+ * The probe starts thirty seconds after the system is up (redwood_pcie_thread), so a session shorter
+ * than about 40 s never reaches it.
 	 *
 	 * Without them the step says what it would do and stops, which is the point: a window onto the
 	 * wrong range is a machine check, not an error code, and this driver has no way to try again
