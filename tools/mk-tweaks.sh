@@ -63,6 +63,7 @@ for spec in "${PKGS[@]}"; do
 	cat > "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries/${dylib%.dylib}.plist" <<PLIST
 { Filter = { Bundles = ( "$bundle" ); }; }
 PLIST
+	cp -f "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries/${dylib%.dylib}.plist" "$work/"
 	{
 		status_line "$id" "$ver" "$name: the island as a tweak"
 		echo "Installed-Size: 16"
@@ -77,9 +78,18 @@ PLIST
 
 	# into the prefix the image carries: the files, then dpkg's own record of it, which is what
 	# Sileo reads to show a package as installed
-	( cd "$work" && rm -rf unpack && mkdir unpack && tar -xzf data.tar.gz -C unpack )
-	cp -a "$work/unpack/var/jb/." "$PREFIX/"
-	chmod 755 "$PREFIX/Library/MobileSubstrate/DynamicLibraries/$dylib"
+	# The prefix is rootless: Library/MobileSubstrate/DynamicLibraries is a SYMLINK (to
+	# usr/lib/TweakInject), so a plain "cp -a dir/. prefix/" fails with "cannot overwrite
+	# non-directory ... with directory" -- which is exactly what the 13:00 build died of. Resolve the
+	# link and put the two files where it points.
+	dllib="$PREFIX/Library/MobileSubstrate/DynamicLibraries"
+	real=$(readlink -f "$dllib" 2>/dev/null || true)
+	[ -n "$real" ] || real=$dllib
+	mkdir -p "$real"
+	cp -f "$work/$dylib" "$real/"
+	cp -f "$work/${dylib%.dylib}.plist" "$real/"
+	chmod 755 "$real/$dylib"
+	echo "   -> $(readlink -f "$real")/$dylib"
 	{
 		status_line "$id" "$ver" "$name: the island as a tweak"
 		echo "Status: install ok installed"
