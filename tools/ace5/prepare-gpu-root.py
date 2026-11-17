@@ -24,6 +24,11 @@ ap.add_argument('--wallpaper', action='store_true', help='Include PosterBoard; p
 ap.add_argument('--compositor-threading', choices=['auto', 'inline'],
                 help='auto: Mesa default; inline: avoid driver-thread handoff in backboardd on a single CPU; omitted: preserve base')
 ap.add_argument('--jobs', type=Path, help='rc.jobs recipe; defaults to the Metal suite or Settings scenario')
+ap.add_argument('--rest', action='store_true',
+                help='also make the rest of the iOS jobs: every on-demand service whose program is in '
+                     'the image (mkjobs.py --rest). Without it only the labels named below exist, and an '
+                     'application that asks for any other service gets nobody: Photos asked for '
+                     'com.apple.photos.service forty times and aborted')
 args = ap.parse_args()
 
 if args.app and not args.metal:
@@ -103,9 +108,11 @@ for label in labels:
     target = job_dir / (label + '.plist')
     if target.is_symlink():
         target.unlink()
-subprocess.run([sys.executable, str(REPO / 'userland/mkjobs.py'),
-                str(args.ios_root.resolve()), str(job_dir.resolve()),
-                *labels], cwd=REPO, check=True)
+mkjobs_args = [sys.executable, str(REPO / 'userland/mkjobs.py')]
+if args.rest:
+    mkjobs_args.append('--rest')
+mkjobs_args += [str(args.ios_root.resolve()), str(job_dir.resolve()), *labels]
+subprocess.run(mkjobs_args, cwd=REPO, check=True)
 if args.compositor_threading:
     target = job_dir / 'com.apple.backboardd.plist'
     if target.is_symlink():
