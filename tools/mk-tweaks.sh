@@ -83,8 +83,20 @@ PLIST
 	# non-directory ... with directory" -- which is exactly what the 13:00 build died of. Resolve the
 	# link and put the two files where it points.
 	dllib="$PREFIX/Library/MobileSubstrate/DynamicLibraries"
-	real=$(readlink -f "$dllib" 2>/dev/null || true)
-	[ -n "$real" ] || real=$dllib
+	# The link's target is an absolute iOS path (/var/jb/usr/lib/TweakInject), which means
+	# nothing on this machine -- and /var/jb does not exist here, so readlink -f returns empty
+	# and mkdir -p on the dangling link fails with "File exists" (the 13:10 build). Map the
+	# target back into the prefix by hand instead of resolving it against the host.
+	real=$dllib
+	if [ -L "$dllib" ]; then
+		t=$(readlink "$dllib")
+		case "$t" in
+		/var/jb/*) real="$PREFIX/${t#/var/jb/}" ;;
+		/*)        real="$PREFIX$t" ;;
+		*)         real=$(dirname "$dllib")/"$t" ;;
+		esac
+		echo "   ($dllib -> $t, so into $real)"
+	fi
 	mkdir -p "$real"
 	cp -f "$work/$dylib" "$real/"
 	cp -f "$work/${dylib%.dylib}.plist" "$real/"
