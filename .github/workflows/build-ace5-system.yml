@@ -109,6 +109,18 @@ jobs:
           tar -C jb/root/var/jb/Applications -xf local/trollstore.tar TrollStore.app
           ls -d jb/root/var/jb/Applications/*.app
 
+      - name: 编译本移植的 tweak 包（灵动岛等），装进越狱前缀
+        run: |
+          # Everything Sileo lists as installed comes from the prefix's dpkg status, so a tweak of
+          # ours becomes a package here: built, unpacked into jb/root/var/jb, recorded in
+          # Library/dpkg/status. The image carries that prefix as /jb and init copies it to
+          # /var/jb at every boot, which is where ElleKit's TweakLoader looks.
+          KEEP_DEBS=1 bash tools/mk-tweaks.sh
+          echo "--- 前缀里的 tweak:"
+          find jb/root/var/jb/Library/MobileSubstrate -type f | head
+          echo "--- dpkg 记录（新包应该在最后）:"
+          tail -12 jb/root/var/jb/Library/dpkg/status
+
       - name: 编译 userland（中文 + REST=1 全部服务 + RWA_PACKED16）
         run: |
           GL=1 PREBUILT= REST=1 RWA_PACKED16=1 FORCE="com.apple.chronod" bash userland/build.sh
