@@ -125,7 +125,8 @@ jobs:
             --output local/root-daily \
             --metal --app --display-test --wallpaper \
             --compositor-threading inline \
-            --jobs tools/ace5/rc.jobs.daily
+            --jobs tools/ace5/rc.jobs.daily \
+            --rest
 
       - name: 组装系统目录（无壁纸版，跳过 macOS sips）
         run: |
