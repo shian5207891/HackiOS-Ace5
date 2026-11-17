@@ -4285,7 +4285,7 @@ redwood_wifi_init(void)
 			pcie_probe_step = pstep;
 			if (kernel_thread_start(redwood_pcie_thread, NULL, &probe_thread) == KERN_SUCCESS) {
 				thread_deallocate(probe_thread);
-				printf("wifi: PCIe probe scheduled 20 s after start (step %u)\n", pstep);
+				printf("wifi: PCIe probe scheduled 30 s after start (step %u)\n", pstep);
 			} else {
 				printf("wifi: PCIe probe: no thread\n");
 			}
@@ -4512,16 +4512,16 @@ redwood_wifi_init(void)
 #define VOTE8_ALL               0x7fU
 #define VOTE0_WIFI              ((1u << 22) | (1u << 12))       /* phy_rchng, aggre_noc_pcie_axi */
 
-static const struct { uint32_t halt, vote, bit; const char *name; } pcie_clocks[] = {
-	{ 0x6b020UL, GCC_PCIE0_VOTE8, 0,  "slv_axi" },
-	{ 0x6b02cUL, GCC_PCIE0_VOTE8, 1,  "mstr_axi" },
-	{ 0x6b038UL, GCC_PCIE0_VOTE8, 2,  "cfg_ahb" },
-	{ 0x6b03cUL, GCC_PCIE0_VOTE8, 3,  "aux" },
-	{ 0x6b048UL, GCC_PCIE0_VOTE8, 4,  "pipe" },
-	{ 0x6b01cUL, GCC_PCIE0_VOTE8, 5,  "slv_q2a_axi" },
-	{ 0x10058UL, GCC_PCIE0_VOTE8, 6,  "cnoc_sf_axi" },
-	{ 0x10064UL, GCC_PCIE0_VOTE0, 12, "aggre_noc_pcie_axi" },
-	{ 0x6b054UL, GCC_PCIE0_VOTE0, 22, "phy_rchng" },
+static const struct { uint32_t halt, vote, bit; uint32_t hwcg; const char *name; } pcie_clocks[] = {
+	{ 0x6b020UL, GCC_PCIE0_VOTE8, 0,  1, "slv_axi" },
+	{ 0x6b02cUL, GCC_PCIE0_VOTE8, 1,  0, "mstr_axi" },
+	{ 0x6b038UL, GCC_PCIE0_VOTE8, 2,  0, "cfg_ahb" },
+	{ 0x6b03cUL, GCC_PCIE0_VOTE8, 3,  0, "aux" },
+	{ 0x6b048UL, GCC_PCIE0_VOTE8, 4,  0, "pipe" },
+	{ 0x6b01cUL, GCC_PCIE0_VOTE8, 5,  0, "slv_q2a_axi" },
+	{ 0x10058UL, GCC_PCIE0_VOTE8, 6,  1, "cnoc_sf_axi" },
+	{ 0x10064UL, GCC_PCIE0_VOTE0, 12, 1, "aggre_noc_pcie_axi" },
+	{ 0x6b054UL, GCC_PCIE0_VOTE0, 22, 0, "phy_rchng" },
 };
 
 /* The probe runs from a thread of its own, thirty seconds after the system is up: every write in it
@@ -4597,6 +4597,21 @@ redwood_pcie_probe(uint32_t step)
 			printf("wifi: PCIe: step 2: uncollapsing PCIe0 (0x5214c bit 0) and its PHY (bit 3)\n");
 			wr(gcc + GCC_PCIE0_COLLAPSE, rd(gcc + GCC_PCIE0_COLLAPSE) & ~((1u << 0) | (1u << 3)));
 			delay_for_interval(1, NSEC_PER_MSEC);
+			/*
+			 * Three of these branches also carry a hardware clock-gating bit (hwcg_bit = 1 in
+			 * gcc-sm8650.c: slv_axi 0x6b020, cnoc_sf_axi 0x10058, aggre_noc_pcie_axi 0x10064).
+			 * While that bit is set the branch is gated by the hardware and a software vote does
+			 * nothing: the first run that voted left exactly those three reporting bit 1 in their
+			 * status word -- 0x80000002 -- and the clocks stayed off. Clearing bit 1 hands them
+			 * back to software, and the vote below is what turns them on.
+			 */
+			for (unsigned i = 0; i < sizeof(pcie_clocks) / sizeof(pcie_clocks[0]); i++) {
+				if (pcie_clocks[i].hwcg != 0 && (rd(gcc + pcie_clocks[i].halt) & (1u << pcie_clocks[i].hwcg))) {
+					printf("wifi: PCIe:   %-18s hardware-gated: clearing bit %u of %#08x\n",
+					    pcie_clocks[i].name, pcie_clocks[i].hwcg, pcie_clocks[i].halt);
+					wr(gcc + pcie_clocks[i].halt, rd(gcc + pcie_clocks[i].halt) & ~(1u << pcie_clocks[i].hwcg));
+				}
+			}
 			printf("wifi: PCIe: step 2: voting %#x in 0x52008 and %#x in 0x52000\n", VOTE8_ALL, VOTE0_WIFI);
 			wr(gcc + GCC_PCIE0_VOTE8, rd(gcc + GCC_PCIE0_VOTE8) | VOTE8_ALL);
 			wr(gcc + GCC_PCIE0_VOTE0, rd(gcc + GCC_PCIE0_VOTE0) | VOTE0_WIFI);
