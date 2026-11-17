@@ -303,6 +303,25 @@ static char out_buf[2 * 1024 * 1024];
 static uint8_t block_buffer[BLOCK_BUFFER_SIZE] __attribute__((aligned(0x2000)));
 static const char *staged_data = out_buf;   /* what "upload" sends: normally the log in out_buf */
 static uint64_t staged_len;
+/*
+ * The kernel log of the last run, kept so that it can be put back. There is ONE staged buffer, and
+ * anything else staged -- a screenshot, above all, which is 14,055,680 bytes of panel -- replaces
+ * whatever the host fetches next. A fetch that took the picture first then asked for the log got
+ * the picture (that is exactly what happened: 14,055,680 bytes where 1,449,984 were expected), and
+ * "oem log" afterwards could only rebuild the loader's own part, because the kernel log had been
+ * handed to compose_logs() and not kept anywhere.
+ */
+static const char *final_klog;
+static uint64_t final_klog_len;
+
+static void
+keep_final_log(const char *klog, uint64_t klog_len)
+{
+	if (klog != NULL && klog_len != 0) {
+		final_klog = klog;
+		final_klog_len = klog_len;
+	}
+}
 
 static void
 compose_logs(const char *klog, uint64_t klog_len)
@@ -337,6 +356,7 @@ write_logs(const char *klog, uint64_t klog_len)
 {
 	efi_block_io *bio = find_log_partition();
 
+	keep_final_log(klog, klog_len);
 	compose_logs(klog, klog_len);
 	if (bio == NULL) {
 		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
@@ -3870,10 +3890,19 @@ fb_command(char *cmd)
 			compose_live_log(running_live, running_slide);
 			fb_reply("OKAY", "live log staged");
 		} else if (starts_with(cmd, "oem log")) {
+			/*
+			 * The kernel has returned: its final log is already staged (compose_logs ran when it
+			 * returned), and recomposing here passes NULL and REBUILDS the staged buffer out of the
+			 * loader's own log alone -- 5870 bytes where 1,449,984 were. That is how a good log got
+			 * thrown away: "oem log" then "get_staged" gave 5870 bytes three times in a row while
+			 * the staged buffer had been complete. A small staged buffer is the only case worth
+			 * recomposing in.
+			 */
 			if (busy) {
 				compose_live_log(running_live, running_slide);
 			} else {
-				compose_logs(NULL, 0);
+				/* the kernel's log back, whole, even if a screenshot took the buffer since */
+				compose_logs(final_klog, final_klog_len);
 			}
 			fb_reply("OKAY", "");
 		} else if (starts_with(cmd, "reboot") || starts_with(cmd, "oem reboot")) {
