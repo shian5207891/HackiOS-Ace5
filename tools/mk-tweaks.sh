@@ -15,10 +15,13 @@ THEOS=${THEOS:-$HOME/theos}
 SDK=$THEOS/sdks/iPhoneOS16.5.sdk
 PREFIX=$ROOT/jb/root/var/jb
 OUT=$ROOT/local/tweaks
+# userland/build.sh finds its compiler through this directory; a bare CI shell does not.
+export PATH="$ROOT/xnu-deps/host/bin:$PATH"
 DYN="xnu-clang -arch arm64 -isysroot $SDK -O1"
 
 [ -d "$PREFIX" ] || { echo "mk-tweaks.sh: no $PREFIX -- run tools/mk-jb.sh first" >&2; exit 1; }
 [ -d "$SDK" ] || { echo "mk-tweaks.sh: no SDK at $SDK (THEOS=$THEOS)" >&2; exit 1; }
+command -v xnu-clang >/dev/null || { echo "mk-tweaks.sh: xnu-clang not found (looked in $ROOT/xnu-deps/host/bin); run xnu-deps/setup.sh --stage1" >&2; exit 1; }
 mkdir -p "$OUT"
 
 # One package, one line here: name version dylib source-filter-bundles
