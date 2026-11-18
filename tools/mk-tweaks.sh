@@ -17,7 +17,10 @@ PREFIX=$ROOT/jb/root/var/jb
 OUT=$ROOT/local/tweaks
 # userland/build.sh finds its compiler through this directory; a bare CI shell does not.
 export PATH="$ROOT/xnu-deps/host/bin:$PATH"
-DYN="xnu-clang -arch arm64 -isysroot $SDK -O1 -fno-omit-frame-pointer"
+# -undefined dynamic_lookup: a tweak names its targets (objc_exception_throw is libobjc's) and must
+# not link them, exactly as MobileSubstrate tweaks never did. Without it the interpose table is an
+# undefined symbol at link time -- which is how the 12:25 build died.
+DYN="xnu-clang -arch arm64 -isysroot $SDK -O1 -fno-omit-frame-pointer -Wl,-undefined,dynamic_lookup"
 
 [ -d "$PREFIX" ] || { echo "mk-tweaks.sh: no $PREFIX -- run tools/mk-jb.sh first" >&2; exit 1; }
 [ -d "$SDK" ] || { echo "mk-tweaks.sh: no SDK at $SDK (THEOS=$THEOS)" >&2; exit 1; }
