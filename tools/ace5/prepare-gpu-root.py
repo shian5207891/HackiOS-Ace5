@@ -75,6 +75,16 @@ if args.wallpaper:
     # mediaserverd and its audio/watch dependencies just to decode wallpaper.
     labels.append('com.apple.PosterBoard')
     required.append(args.ios_root / 'Applications/PosterBoard.app/PosterBoard')
+    # The services the crashing applications actually ask for. --rest is meant to bring all of them
+    # and does not: the 17 November build printed "397 more jobs" and the image it packed still held
+    # only these curated ones, so every application that touched MediaPlayer -- Mail, Photos, Music,
+    # AppleTV, Podcasts, Settings, all eleven of them -- died of an uncaught exception thrown inside
+    # MediaPlayer's own dispatch block. These are named here instead, on the path that is known to
+    # reach the image. Each is still dropped (with a line in the log) if its program or plist is not
+    # in the extracted tree.
+    labels += ['com.apple.mediaremoted', 'com.apple.assetsd', 'com.apple.photolibraryd',
+               'com.apple.healthd', 'com.apple.accountsd', 'com.apple.passd',
+               'com.apple.itunesstored', 'com.apple.storekitagent']
 for label in labels:
     folder = 'LaunchAngels' if label == 'com.apple.PosterBoard' else 'LaunchDaemons'
     required.append(args.ios_root / 'System/Library' / folder / (label + '.plist'))
@@ -127,4 +137,5 @@ if args.compositor_threading:
     else:
         env.pop('GALLIUM_THREAD', None)
     target.write_bytes(plistlib.dumps(job))
+print(f'prepare-gpu-root: {len(list(job_dir.glob("*.plist")))} job plists in {job_dir}')
 print(f'Prepared {args.output.resolve()} (no image or device changed)')
