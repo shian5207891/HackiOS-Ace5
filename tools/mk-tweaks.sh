@@ -17,7 +17,7 @@ PREFIX=$ROOT/jb/root/var/jb
 OUT=$ROOT/local/tweaks
 # userland/build.sh finds its compiler through this directory; a bare CI shell does not.
 export PATH="$ROOT/xnu-deps/host/bin:$PATH"
-DYN="xnu-clang -arch arm64 -isysroot $SDK -O1"
+DYN="xnu-clang -arch arm64 -isysroot $SDK -O1 -fno-omit-frame-pointer"
 
 [ -d "$PREFIX" ] || { echo "mk-tweaks.sh: no $PREFIX -- run tools/mk-jb.sh first" >&2; exit 1; }
 [ -d "$SDK" ] || { echo "mk-tweaks.sh: no SDK at $SDK (THEOS=$THEOS)" >&2; exit 1; }
@@ -30,8 +30,15 @@ mkdir -p "$OUT"
 #   MobileGestalt answers that say the device has one. The work itself is in
 #   /redwood/lib/libredwood-sb.dylib, which the port injects into SpringBoard; this package makes
 #   the same thing a package, loaded through ElleKit like any other tweak.
+#
+#   RedwoodExc -- the diagnostic: every app of the 21:03 run died of an uncaught exception thrown
+#   inside a MediaPlayer block, and an app's stderr never reaches the kernel log. This interposes
+#   objc_exception_throw in EVERY process (empty filter) and writes the exception's name, reason and
+#   frames to /dev/console -- which is in the log we fetch. It is meant to be removed once the
+#   exception is known; it is a question, not a feature.
 PKGS=(
-	"redwood.island 1.0.0 tweak_island com.apple.springboard"
+	"redwood.island 1.0.0 tweak_island com.apple.springboard the island as a tweak"
+	"redwood.exc    1.0.0 tweak_exc    -                    a line per exception thrown, for diagnosis"
 )
 
 status_line() {                                  # $1 = package id, $2 = version
@@ -44,7 +51,7 @@ status_line() {                                  # $1 = package id, $2 = version
 
 for spec in "${PKGS[@]}"; do
 	set -- $spec
-	id=$1; ver=$2; src=$3; bundle=$4
+	id=$1; ver=$2; src=$3; bundle=$4; what=${5:-the island as a tweak}
 	name=${id#redwood.}                          # island
 	lib=${name^}                                 # Island -> RedwoodIsland.dylib
 	dylib="Redwood${lib}.dylib"
@@ -60,12 +67,20 @@ for spec in "${PKGS[@]}"; do
 	stage=$work/stage
 	mkdir -p "$stage/DEBIAN" "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries"
 	cp "$work/$dylib" "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries/"
-	cat > "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries/${dylib%.dylib}.plist" <<PLIST
+	# a filter of "-" means every process: an empty Filter list matches any bundle, which is what
+	# the exception reporter needs and what the island does not (it is SpringBoard's)
+	if [ "$bundle" = "-" ]; then
+		cat > "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries/${dylib%.dylib}.plist" <<PLIST
+{ Filter = { }; }
+PLIST
+	else
+		cat > "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries/${dylib%.dylib}.plist" <<PLIST
 { Filter = { Bundles = ( "$bundle" ); }; }
 PLIST
+	fi
 	cp -f "$stage/var/jb/Library/MobileSubstrate/DynamicLibraries/${dylib%.dylib}.plist" "$work/"
 	{
-		status_line "$id" "$ver" "$name: the island as a tweak"
+		status_line "$id" "$ver" "$what"
 		echo "Installed-Size: 16"
 	} > "$stage/DEBIAN/control"
 
@@ -103,7 +118,7 @@ PLIST
 	chmod 755 "$real/$dylib"
 	echo "   -> $(readlink -f "$real")/$dylib"
 	{
-		status_line "$id" "$ver" "$name: the island as a tweak"
+		status_line "$id" "$ver" "$what"
 		echo "Status: install ok installed"
 		echo "Installed-Size: 16"
 		echo
