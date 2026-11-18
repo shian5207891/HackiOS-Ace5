@@ -129,7 +129,12 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
-/redwood/lib/libredwood-tweaks.dylib Preferences"}
+# The tweak loader used to be inserted into Preferences alone (SpringBoard gets it from
+# inject_sb). Everything else that could have said what its exception was -- the eleven processes
+# of the 18 November run -- had no loader in it, so RedwoodExc.dylib sat in the prefix unopened.
+# The kernel matches these names exactly and its conf buffer is 512 bytes: this list is 415.
+/redwood/lib/libredwood-tweaks.dylib Preferences MobileMail Music AppleTV Podcasts Photos
+/redwood/lib/libredwood-tweaks.dylib MobileSafari MobileCal AppStore MobileSMS MobileNotes Shortcuts Health"}
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
 # list above because it changes what the daemon believes: AMS's account is made to answer with the
 # storefront Apple's bag server returned for this device, which is how the App Store is asked whether
